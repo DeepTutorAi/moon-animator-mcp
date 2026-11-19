@@ -3,7 +3,7 @@
 Bundles two things for working with Moon Animator 2 in Roblox Studio:
 
 - the `moon-animator-mcp` MCP server, started through
-  `npx -y github:DeepTutorAi/moon-animator-mcp#v0.1.3`, which gives the agent tools to see, measure and author
+  `npx -y github:DeepTutorAi/moon-animator-mcp#v0.1.4`, which gives the agent tools to see, measure and author
   animations and cutscenes;
 - the `moon-animator` skill, a field guide that teaches the agent the working
   loop, joint conventions and tested recipes.

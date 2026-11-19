@@ -229,7 +229,8 @@ function relativeLabel(args) {
 const TESTED_MOON_VERSIONS = [36000];
 
 // `plugin` describes the Studio plugin this server ships: { version, state, target, reason }.
-export function createTools({ bridge, runLuau, captureWindow, composeSheet, annotateImage, plugin = {}, allowExec = false }) {
+// `version()` reports this server's version and, when known, the latest release.
+export function createTools({ bridge, runLuau, captureWindow, composeSheet, annotateImage, plugin = {}, version, allowExec = false }) {
   let calibration = null;
   let shotCounter = 0;
 
@@ -432,10 +433,11 @@ export function createTools({ bridge, runLuau, captureWindow, composeSheet, anno
       inputSchema: { type: 'object', properties: {}, additionalProperties: false },
       async call() {
         const status = await bridge.status();
-        if (!status.pluginConnected) return [text({ connected: false, hint: notConnectedHint() })];
+        const server = version?.();
+        if (!status.pluginConnected) return [text({ connected: false, server, hint: notConnectedHint() })];
 
         const studio = await runLuau('status');
-        const result = { connected: true, plugin: status.pluginVersion, ...summarizeStudio(studio) };
+        const result = { connected: true, server, plugin: status.pluginVersion, ...summarizeStudio(studio) };
         const notes = moonNotes(studio);
         if (plugin.version && status.pluginVersion && status.pluginVersion !== plugin.version) {
           notes.push(`Studio is running MoonBridge ${status.pluginVersion}; version ${plugin.version} is installed. Restart Roblox Studio to load it.`);

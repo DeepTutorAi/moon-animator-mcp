@@ -294,7 +294,14 @@ test('status passes on a healthy session without notes', async () => {
   const [content] = await h.tools.call('moon_status', {});
   const report = JSON.parse(content.text);
   assert.equal(report.connected, true);
+  assert.equal(report.server, undefined, 'no version line when the host gives none');
   assert.deepEqual(report.moonAnimator, { version: 36000, windowVisible: false });
+
+  const version = () => ({ running: '0.1.4', latest: '0.2.0', update: 'To update, ...' });
+  const versioned = createTools({ ...h.deps, version });
+  assert.deepEqual(JSON.parse((await versioned.call('moon_status', {}))[0].text).server, version());
+  const offline = createTools({ ...h.deps, version, bridge: { status: async () => ({ pluginConnected: false }) } });
+  assert.equal(JSON.parse((await offline.call('moon_status', {}))[0].text).server.latest, '0.2.0');
   assert.equal(report.notes, undefined);
   assert.ok(!content.text.includes('\n'), 'results are compact JSON');
 });

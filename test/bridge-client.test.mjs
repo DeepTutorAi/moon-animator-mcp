@@ -70,7 +70,7 @@ test('MCP server answers initialize and tools/list over stdio', async () => {
   const home = mkdtempSync(join(tmpdir(), 'moon-mcp-test-'));
   const server = spawn(process.execPath, [fileURLToPath(new URL('../bin/moon-animator-mcp.mjs', import.meta.url))], {
     stdio: ['pipe', 'pipe', 'ignore'],
-    env: { ...process.env, MOON_BRIDGE_PORT: String(port), MOON_MCP_HOME: home, MOON_STUDIO_PLUGINS_DIR: home, MOON_MCP_ALLOW_EXEC: '' },
+    env: { ...process.env, MOON_BRIDGE_PORT: String(port), MOON_MCP_HOME: home, MOON_STUDIO_PLUGINS_DIR: home, MOON_MCP_NO_UPDATE_CHECK: '1', MOON_MCP_ALLOW_EXEC: '' },
   });
   const replies = createInterface({ input: server.stdout })[Symbol.asyncIterator]();
   const request = async (message) => {

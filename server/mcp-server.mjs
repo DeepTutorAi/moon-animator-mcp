@@ -12,6 +12,7 @@ import { createLuauRunner } from './luau.mjs';
 import { bridgePort, ensureToken } from './paths.mjs';
 import { bundledPluginVersion, ensurePlugin } from './plugin-install.mjs';
 import { createTools } from './tools.mjs';
+import { createUpdateCheck } from './update-check.mjs';
 
 const PROTOCOL_VERSIONS = ['2025-06-18', '2025-03-26', '2024-11-05'];
 
@@ -34,6 +35,14 @@ export async function startServer() {
     console.error(`${PACKAGE.name}: MoonBridge Studio plugin ${plugin.state}${plugin.target ? ` at ${plugin.target}` : ''}${plugin.reason ? ` (${plugin.reason})` : ''}`);
   }
 
+  // Looks up the latest release in the background and only reports it.
+  const updates = createUpdateCheck({
+    current: PACKAGE.version,
+    disabled: process.env.MOON_MCP_NO_UPDATE_CHECK === '1',
+    log: (message) => console.error(`${PACKAGE.name}: ${message}`),
+  });
+  updates.start();
+
   const bridge = createBridgeClient({ port: bridgePort(), token: ensureToken() });
   const tools = createTools({
     bridge,
@@ -42,6 +51,7 @@ export async function startServer() {
     composeSheet,
     annotateImage,
     plugin,
+    version: () => updates.info(),
     allowExec: process.env.MOON_MCP_ALLOW_EXEC === '1',
   });
 
@@ -66,7 +76,11 @@ export async function startServer() {
     if (method === 'tools/list') return { tools: tools.list() };
     if (method === 'tools/call') {
       try {
-        return { content: await tools.call(params?.name, params?.arguments) };
+        const content = await tools.call(params?.name, params?.arguments);
+        // Said once per session, on whichever tool is used first.
+        const notice = updates.takeNotice();
+        if (notice) content.push({ type: 'text', text: notice });
+        return { content };
       } catch (error) {
         return { content: [{ type: 'text', text: String(error.message ?? error) }], isError: true };
       }

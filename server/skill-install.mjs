@@ -1,7 +1,7 @@
 // Copies the optional agent skill that ships with this package into a skills
 // folder, for clients that use the MCP server without the Claude Code plugin.
 
-import { cpSync } from 'node:fs';
+import { cpSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -16,8 +16,12 @@ export function skillsDir({ project = false, dir } = {}) {
   return project ? resolve('.claude', 'skills') : join(homedir(), '.claude', 'skills');
 }
 
+// Copies the skill and records which release it came from, so `update` can
+// tell an outdated copy from a current one.
 export function installSkill(options) {
   const target = join(skillsDir(options), SKILL_NAME);
   cpSync(SOURCE, target, { recursive: true });
+  const { version } = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  writeFileSync(join(target, 'VERSION'), `${version}\n`);
   return target;
 }

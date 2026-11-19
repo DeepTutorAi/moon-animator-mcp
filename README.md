@@ -46,7 +46,7 @@ One command, then one restart of Studio.
 ### 1. Add the server to your MCP client
 
 ```powershell
-claude mcp add --scope user moon-animator -- npx -y github:DeepTutorAi/moon-animator-mcp#v0.1.3
+claude mcp add --scope user moon-animator -- npx -y github:DeepTutorAi/moon-animator-mcp#v0.1.4
 ```
 
 For other clients, the equivalent configuration is:
@@ -56,7 +56,7 @@ For other clients, the equivalent configuration is:
   "mcpServers": {
     "moon-animator": {
       "command": "npx",
-      "args": ["-y", "github:DeepTutorAi/moon-animator-mcp#v0.1.3"]
+      "args": ["-y", "github:DeepTutorAi/moon-animator-mcp#v0.1.4"]
     }
   }
 }
@@ -79,7 +79,7 @@ whether Moon Animator 2 is loaded and which file is open, and says what to do
 about anything missing. Outside an agent session, this shows the same setup:
 
 ```powershell
-npx -y github:DeepTutorAi/moon-animator-mcp#v0.1.3 doctor
+npx -y github:DeepTutorAi/moon-animator-mcp#v0.1.4 doctor
 ```
 
 ### Optional: the agent skill
@@ -89,7 +89,7 @@ angles behave, how to get a prop to the mouth, how to cut a camera, and tested
 recipes. It makes a noticeable difference to the first result.
 
 ```powershell
-npx -y github:DeepTutorAi/moon-animator-mcp#v0.1.3 install-skill
+npx -y github:DeepTutorAi/moon-animator-mcp#v0.1.4 install-skill
 ```
 
 This copies the skill to `~/.claude/skills/moon-animator`. Use `--project` to
@@ -117,7 +117,7 @@ it instead of step 1, not as well as it, or the tools will be listed twice.
 
 ### Why the version is pinned
 
-`#v0.1.3` makes npx run exactly that release. The server runs code inside your
+`#v0.1.4` makes npx run exactly that release. The server runs code inside your
 Studio session, so the version you run should be one you chose, not whatever
 was pushed last. To update, change the tag (see
 [Updating](#updating-and-uninstalling)). Leaving the tag off tracks the newest
@@ -199,10 +199,11 @@ MCP client  ──stdio──  moon-animator-mcp  ──HTTP on 127.0.0.1── 
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `MOON_BRIDGE_PORT` | `47823` | Bridge port. Set it for both `install-plugin` and the server; reinstall the plugin after changing it. |
+| `MOON_BRIDGE_PORT` | `47823` | Bridge port. Studio loads one MoonBridge plugin, so every server on this machine must use the same port: a server started with another port rewrites the plugin for that port. |
 | `MOON_MCP_HOME` | `~/.moon-animator-mcp` | Where the token is stored. |
 | `MOON_MCP_ALLOW_EXEC` | unset | `1` enables `moon_exec_luau`. |
 | `MOON_MCP_NO_PLUGIN_INSTALL` | unset | `1` stops the server from installing or updating the Studio plugin. |
+| `MOON_MCP_NO_UPDATE_CHECK` | unset | `1` stops the server from looking up the latest release. |
 | `MOON_STUDIO_PLUGINS_DIR` | `%LOCALAPPDATA%\Roblox\Plugins` | Where the Studio plugin is installed. |
 
 ## Token cost
@@ -243,26 +244,39 @@ Measured on a 6-second cutscene with 319 keyframes:
 
 ## Updating and uninstalling
 
-To update, replace the tag wherever the package name appears in your MCP
-client's configuration, for example with Claude Code:
+The server never updates itself. When it starts it reads the latest version
+number from this repository (one small request to GitHub; nothing about your
+machine is sent) and, if that is newer than the one running, says so: once in
+the first tool result of the session, in `moon_status`, and in the server log.
+Whether and when to update is up to you.
+
+To update, run this in your project folder, with the version the notice names:
 
 ```powershell
-claude mcp remove moon-animator
+npx -y github:DeepTutorAi/moon-animator-mcp#v<new version> update
 ```
 
-```powershell
-claude mcp add --scope user moon-animator -- npx -y github:DeepTutorAi/moon-animator-mcp#<new tag>
-```
+It moves the Claude Code registration of the server to that release, keeping
+its scope and environment variables, and refreshes every installed copy of the
+skill (in `~/.claude/skills` and in the project). Then restart your session.
 
-The server refreshes the Studio plugin when a release changes it, and
-`moon_status` tells you when Studio has to be restarted to load it. With the
+| Variant | Effect |
+| --- | --- |
+| `update --check` | Reports what would change and changes nothing. |
+| `update --mcp` | Only the server registration. |
+| `update --skill` | Only the skill. |
+| `update --name <server>` | For a registration that is not named `moon-animator`. |
+
+In other MCP clients, change the tag in the package name by hand. With the
 Claude Code plugin, `claude plugin update moon-animator@moon-animator-mcp`
-moves to the newest release.
+updates server and skill together. The server refreshes the Studio plugin
+itself when a release changes it, and `moon_status` says when Studio has to be
+restarted to load it.
 
 To remove everything:
 
 ```powershell
-npx -y github:DeepTutorAi/moon-animator-mcp#v0.1.3 uninstall-plugin
+npx -y github:DeepTutorAi/moon-animator-mcp#v0.1.4 uninstall-plugin
 ```
 
 ```powershell
@@ -279,7 +293,7 @@ Then delete `~/.moon-animator-mcp` and, if installed, the
 | --- | --- |
 | `moon_status` says Studio is not connected | Studio is closed, has not been restarted since the plugin was installed, or the HTTP prompt was declined. In Studio: Plugins tab → Manage Plugins → MoonBridge → allow HTTP requests to `127.0.0.1`. |
 | `moon_status` says Moon Animator 2 is not loaded | Install it from the Creator Store, then open it from the Plugins tab. |
-| The server does not start in your MCP client | Run `npx -y github:DeepTutorAi/moon-animator-mcp#v0.1.3 --version` in a terminal to see the error. Git and Node.js 20+ must be on `PATH`. |
+| The server does not start in your MCP client | Run `npx -y github:DeepTutorAi/moon-animator-mcp#v0.1.4 --version` in a terminal to see the error. Git and Node.js 20+ must be on `PATH`. |
 | An item is marked `stale` | Its rig was deleted or replaced while the file was open. Save, then ask the agent to reopen the file. |
 | Images are black or show the wrong area | Leave the Studio window open and unminimized; ask the agent to capture again with `recalibrate`. |
 

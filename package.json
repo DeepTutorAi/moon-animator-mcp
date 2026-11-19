@@ -1,6 +1,6 @@
 {
   "name": "moon-animator-mcp",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Unofficial MCP server that lets AI agents inspect and author Moon Animator 2 animations and cutscenes in Roblox Studio.",
   "keywords": ["mcp", "model-context-protocol", "roblox", "roblox-studio", "moon-animator", "animation", "claude"],
   "license": "MIT",

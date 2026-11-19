@@ -27,6 +27,10 @@ Call `moon_status`. It tells you which of these is missing:
 Do not work around a missing Moon Animator with Roblox's own animation tools:
 the user chose Moon Animator, and its files are where they will keep editing.
 
+When a tool result says an update is available, pass it on: tell the user the
+version and the command it names, and carry on with the task. Updating is the
+user's decision, so do not run the command unless they ask.
+
 The tools change the user's live Studio session. Captures briefly hide the
 Moon Animator window and move the camera, then put both back, so tell the user
 when you are about to run a long series of captures.

@@ -13,7 +13,7 @@ const PACKAGE = JSON.parse(readFileSync(new URL('../package.json', import.meta.u
 async function withHome(run) {
   const home = mkdtempSync(join(tmpdir(), 'moon-mcp-test-'));
   try {
-    return await run(home, { ...process.env, MOON_MCP_HOME: home, MOON_STUDIO_PLUGINS_DIR: home });
+    return await run(home, { ...process.env, MOON_MCP_HOME: home, MOON_STUDIO_PLUGINS_DIR: home, MOON_MCP_NO_UPDATE_CHECK: '1' });
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
@@ -81,6 +81,7 @@ test('install-skill copies the skill with its references into the chosen folder'
     assert.ok(output.includes(skill));
     assert.match(readFileSync(join(skill, 'SKILL.md'), 'utf8'), /^---\r?\nname: moon-animator\r?\ndescription: /);
     assert.ok(existsSync(join(skill, 'references', 'recipes.md')));
+    assert.equal(readFileSync(join(skill, 'VERSION'), 'utf8').trim(), PACKAGE.version, 'the copy records its release');
   });
 });
 
@@ -99,7 +100,7 @@ test('plugin manifest, marketplace entry and package agree on names and version'
     const text = readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
     const specs = text.match(/github:DeepTutorAi\/moon-animator-mcp[^\s`"]*/g) ?? [];
     assert.ok(specs.length > 0, `${path} names the package`);
-    for (const spec of specs) assert.ok(spec === pinned || spec.endsWith('#<new'), `${path} has an unpinned or outdated spec: ${spec}`);
+    for (const spec of specs) assert.ok(spec === pinned || spec.endsWith('#v<new'), `${path} has an unpinned or outdated spec: ${spec}`);
   }
   assert.ok(PACKAGE.repository.url.includes('DeepTutorAi/moon-animator-mcp'));
 });

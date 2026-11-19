@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.1.4
+
+The Studio plugin (MoonBridge) is unchanged in this release.
+
+### Added
+
+- Update notice. The server looks up the latest version when it starts and,
+  when a newer one exists, says so in the first tool result of the session, in
+  `moon_status` (`server.latest`) and in the server log, with the command to
+  update. Nothing is updated automatically. `MOON_MCP_NO_UPDATE_CHECK=1` turns
+  the lookup off.
+- `update` command: moves the Claude Code registration of the server to the
+  latest release, keeping its scope and environment variables, and refreshes
+  installed copies of the skill. `--mcp` or `--skill` limit it to one of them,
+  `--check` only reports.
+- `install-skill` records the release a copy came from, and `doctor` lists the
+  installed skills and the latest release.
+
 ## 0.1.3
 
 The Studio plugin (MoonBridge) is unchanged in this release.
