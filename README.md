@@ -217,12 +217,12 @@ MCP client  ──stdio──  moon-animator-mcp  ──HTTP on 127.0.0.1── 
 
 ## Updating and uninstalling
 
-npx caches the package. To pick up a new version, clear the cache, then
-reinstall the Studio plugin if the release notes say it changed:
+npx checks the repository each time the server starts and installs the newest
+commit when there is one, so the server updates itself. When the release notes
+say the Studio plugin changed, run `install-plugin` again and restart Studio.
 
-```powershell
-npx clear-npx-cache
-```
+To stay on a fixed version instead, add a tag to the package name everywhere
+it appears, for example `github:DeepTutorAi/moon-animator-mcp#v0.1.0`.
 
 To remove everything:
 
