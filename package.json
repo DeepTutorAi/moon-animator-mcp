@@ -1,0 +1,19 @@
+{
+  "name": "moon-animator-mcp",
+  "version": "0.1.0",
+  "description": "Unofficial MCP server that lets AI agents inspect and author Moon Animator 2 animations and cutscenes in Roblox Studio.",
+  "keywords": ["mcp", "model-context-protocol", "roblox", "roblox-studio", "moon-animator", "animation", "claude"],
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/DeepTutorAi/moon-animator-mcp.git" },
+  "homepage": "https://github.com/DeepTutorAi/moon-animator-mcp#readme",
+  "bugs": { "url": "https://github.com/DeepTutorAi/moon-animator-mcp/issues" },
+  "type": "module",
+  "bin": { "moon-animator-mcp": "bin/moon-animator-mcp.mjs" },
+  "files": ["bin", "server", "plugin", "plugins", "tools/capture-host.ps1", "README.md", "LICENSE"],
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "test": "node --test test/",
+    "install:plugin": "node bin/moon-animator-mcp.mjs install-plugin",
+    "daemon": "node server/bridge-daemon.mjs"
+  }
+}

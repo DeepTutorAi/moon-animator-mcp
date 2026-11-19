@@ -1,0 +1,10 @@
+{
+  "name": "moon-animator",
+  "version": "0.1.0",
+  "description": "Inspect and author Moon Animator 2 animations and cutscenes in Roblox Studio: the moon-animator-mcp server plus an agent field guide. Requires Moon Animator 2 from the Roblox Creator Store.",
+  "author": { "name": "DeepTutorAi", "url": "https://github.com/DeepTutorAi" },
+  "homepage": "https://github.com/DeepTutorAi/moon-animator-mcp#readme",
+  "repository": "https://github.com/DeepTutorAi/moon-animator-mcp",
+  "license": "MIT",
+  "keywords": ["roblox", "roblox-studio", "moon-animator", "animation", "cutscene", "mcp"]
+}

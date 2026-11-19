@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "moon-animator": {
+      "command": "npx",
+      "args": ["-y", "github:DeepTutorAi/moon-animator-mcp"]
+    }
+  }
+}

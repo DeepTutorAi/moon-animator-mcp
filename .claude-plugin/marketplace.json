@@ -1,0 +1,14 @@
+{
+  "name": "moon-animator-mcp",
+  "owner": { "name": "DeepTutorAi" },
+  "metadata": {
+    "description": "Moon Animator 2 tools for AI agents in Roblox Studio."
+  },
+  "plugins": [
+    {
+      "name": "moon-animator",
+      "source": "./plugins/moon-animator",
+      "description": "MCP server and agent field guide for inspecting and authoring Moon Animator 2 animations and cutscenes in Roblox Studio. Requires Moon Animator 2 from the Roblox Creator Store."
+    }
+  ]
+}
