@@ -59,11 +59,12 @@ end
 
 local tracks = {}
 for name, track in pairs(cameraItem.PropertyMap) do
-	local list = {}
-	for _, keyframe in ipairs(track.TrackItems.Objects) do
-		table.insert(list, { f = keyframe.frm_pos, ease = easeLabel(keyframe.EaseMap[keyframe.width]) })
+	local frames, eases = {}, {}
+	for index, keyframe in ipairs(track.TrackItems.Objects) do
+		frames[index] = keyframe.frm_pos
+		eases[index] = easeLabel(keyframe.EaseMap[keyframe.width])
 	end
-	tracks[name] = { enabled = track.Enabled, keyframes = list }
+	tracks[name] = { frames = frames, eases = eases, disabled = if track.Enabled then nil else true }
 end
 
 return HttpService:JSONEncode({

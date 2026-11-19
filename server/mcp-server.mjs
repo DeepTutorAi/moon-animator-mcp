@@ -10,6 +10,7 @@ import { createBridgeClient } from './bridge-client.mjs';
 import { annotateImage, captureWindow, closeCaptureHost, composeSheet } from './capture.mjs';
 import { createLuauRunner } from './luau.mjs';
 import { bridgePort, ensureToken } from './paths.mjs';
+import { bundledPluginVersion, ensurePlugin } from './plugin-install.mjs';
 import { createTools } from './tools.mjs';
 
 const PROTOCOL_VERSIONS = ['2025-06-18', '2025-03-26', '2024-11-05'];
@@ -17,15 +18,22 @@ const PROTOCOL_VERSIONS = ['2025-06-18', '2025-03-26', '2024-11-05'];
 export const PACKAGE = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 
 const INSTRUCTIONS = [
-  'Tools for Moon Animator 2, a Roblox Studio animation plugin. They only work while Roblox Studio is open with',
-  'two plugins loaded: Moon Animator 2 (installed by the user from the Roblox Creator Store; this server does not',
-  'include it) and MoonBridge (installed with `moon-animator-mcp install-plugin`). Call moon_status first: it says',
-  'what is missing. To look at an animation use moon_storyboard, moon_screenshot with focus, and moon_motion_trail;',
-  'to pose, use moon_solve_reach and moon_preview_pose before committing with moon_set_keyframes or moon_spin;',
-  'check with moon_sample; finish with moon_save and moon_export.',
+  'Tools for Moon Animator 2, a Roblox Studio animation plugin. They work while Roblox Studio is open with two',
+  'plugins loaded: Moon Animator 2 (the user installs it from the Roblox Creator Store; it is not included) and',
+  'MoonBridge (this server installs it; Studio has to be restarted once afterwards). Call moon_status first: it',
+  'says what is missing. Look with moon_storyboard, moon_screenshot and moon_motion_trail; find a pose with',
+  'moon_solve_reach and moon_preview_pose before committing with moon_set_keyframes or moon_spin; check with',
+  'moon_sample; finish with moon_save and moon_export.',
 ].join(' ');
 
 export async function startServer() {
+  // Keeps the Studio plugin in step with this package, so adding the server
+  // to an MCP client is the only install step.
+  const plugin = { version: bundledPluginVersion(), ...ensurePlugin() };
+  if (plugin.state !== 'current') {
+    console.error(`${PACKAGE.name}: MoonBridge Studio plugin ${plugin.state}${plugin.target ? ` at ${plugin.target}` : ''}${plugin.reason ? ` (${plugin.reason})` : ''}`);
+  }
+
   const bridge = createBridgeClient({ port: bridgePort(), token: ensureToken() });
   const tools = createTools({
     bridge,
@@ -33,6 +41,7 @@ export async function startServer() {
     captureWindow,
     composeSheet,
     annotateImage,
+    plugin,
     allowExec: process.env.MOON_MCP_ALLOW_EXEC === '1',
   });
 

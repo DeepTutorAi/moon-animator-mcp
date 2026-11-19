@@ -21,8 +21,7 @@ const CAMERA_SCHEMA = {
   additionalProperties: false,
   required: ['position'],
   description:
-    'Pose the edit camera: position plus either look_at (world point) or rotation (XYZ degrees), optional fov. ' +
-    'Overrides the camera animated by Moon Animator for this view.',
+    'Custom camera: position plus look_at (world point) or rotation (XYZ degrees), optional fov.',
   properties: {
     position: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
     look_at: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
@@ -36,18 +35,45 @@ const FOCUS_SCHEMA = {
   additionalProperties: false,
   required: ['item'],
   description:
-    'Frame an item of the open file automatically instead of giving a camera: the camera is placed on the named ' +
-    'side of the item (relative to the way it faces) at the distance that fills the image, the image is cropped ' +
-    'to the item, and Moon Animator screen effects are hidden.',
+    'Frame an item automatically: the camera goes to the named side of the item (relative to the way it faces) ' +
+    'at the distance that fills the image. Screen effects and anything standing between camera and item are hidden.',
   properties: {
     item: { type: ['string', 'integer'], description: 'Item name, path or index.' },
+    with: { type: 'array', items: { type: ['string', 'integer'] }, maxItems: 4, description: 'Other items to keep in frame, e.g. an opponent.' },
     view: { type: 'string', enum: VIEWS, default: 'three_quarter' },
     margin: { type: 'number', minimum: 1, maximum: 3, default: 1.15 },
   },
 };
 
+// Results are read by a model, so they are sent as compact JSON: indentation
+// roughly doubles the size of the number-heavy results these tools return.
 function text(value) {
-  return { type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value, null, 2) };
+  return { type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value) };
+}
+
+// The plugin reports every flag it probed; keep what an agent acts on.
+function summarizeStudio(studio) {
+  const summary = {
+    place: studio.place,
+    mode: studio.studioMode,
+    moonAnimator: studio.hasMoonGlobal ? { version: studio.moonVersion, windowVisible: studio.windowVisible === true } : null,
+    viewport: studio.viewport && { width: Math.round(studio.viewport.width), height: Math.round(studio.viewport.height) },
+    file: studio.file ?? null,
+  };
+  if (studio.camera?.cframe) {
+    summary.camera = { position: studio.camera.cframe.p, rotation: studio.camera.cframe.r, fov: studio.camera.fov };
+  }
+  if (studio.file && Array.isArray(studio.items)) {
+    summary.items = studio.items.map((item) => {
+      const entry = { index: item.index, type: item.itemType, path: item.path };
+      if (item.stale) entry.stale = item.stale;
+      if (item.properties && !Array.isArray(item.properties)) entry.keyframes = item.properties;
+      if (item.rig) entry.rig = item.rig;
+      if (item.hasMarkerTrack) entry.markers = true;
+      return entry;
+    });
+  }
+  return summary;
 }
 
 function vector3(value, name) {
@@ -76,7 +102,44 @@ function validateFocus(focus, camera) {
   if (!VIEWS.includes(view)) throw new Error(`focus.view must be one of: ${VIEWS.join(', ')}`);
   const margin = focus.margin ?? 1.15;
   if (typeof margin !== 'number' || margin < 1 || margin > 3) throw new Error('focus.margin must be between 1 and 3');
-  return { item: focus.item, view, margin };
+  return { item: focus.item, view, margin, with: itemList(focus.with, 'focus.with') };
+}
+
+// Extra items to keep in frame next to the main one.
+function itemList(value, name) {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > 4 || !value.every((item) => typeof item === 'string' || Number.isInteger(item))) {
+    throw new Error(`${name} must list at most 4 item names, paths or indexes`);
+  }
+  return value;
+}
+
+// A point for moon_measure: { item, part, offset? }.
+function pointSpec(value, name) {
+  if (typeof value !== 'object' || value === null) throw new Error(`${name} must be an object with item and part`);
+  if (typeof value.item !== 'string' && !Number.isInteger(value.item)) throw new Error(`${name}.item must be an item name, path or index`);
+  if (typeof value.part !== 'string' || value.part === '') throw new Error(`${name}.part must be a part or bone name`);
+  if (value.offset !== undefined) vector3(value.offset, `${name}.offset`);
+  return { item: value.item, part: value.part, offset: value.offset };
+}
+
+// Frames to visit: the explicit list, or from..to in steps (about 40 by default).
+async function frameList(args, runLuau, max) {
+  if (args.frames !== undefined) {
+    if (!Array.isArray(args.frames) || args.frames.length < 1 || args.frames.length > max) throw new Error(`frames must list 1 to ${max} frames`);
+    args.frames.forEach((value, index) => integer(value, `frames[${index}]`, 0, 1_000_000));
+    return args.frames;
+  }
+  const timeline = await runLuau('timeline');
+  const from = integer(args.from, 'from', 0, 1_000_000, 0);
+  const to = integer(args.to, 'to', 0, 1_000_000, timeline.lastKeyframe);
+  if (to < from) throw new Error('to must not be before from');
+  const step = integer(args.step, 'step', 1, 1_000_000, Math.max(1, Math.ceil((to - from) / 40)));
+  const frames = [];
+  for (let frame = from; frame <= to; frame += step) frames.push(frame);
+  if (frames.at(-1) !== to) frames.push(to);
+  if (frames.length > max) throw new Error(`that range and step give more than ${max} samples; use a larger step`);
+  return frames;
 }
 
 function validateCamera(camera) {
@@ -111,9 +174,62 @@ const TRAIL_COLORS = [
   [255, 150, 70],
 ];
 const MAX_TRAIL_SAMPLES = 120;
+const RELATIVE_ITEM = {
+  type: ['string', 'integer'],
+  description: 'Item that owns the relative_to part, when it is not this item (e.g. an opponent).',
+};
+
+const POINT_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['item', 'part'],
+  properties: {
+    item: { type: ['string', 'integer'] },
+    part: { type: 'string', description: 'Part or bone name.' },
+    offset: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: 'Shift in the part\'s local space (studs).' },
+  },
+};
+
+// Turns per-frame [frame, distance, gap, x, y, z] rows into columns plus the
+// moments worth acting on: the closest approach and the time spent inside.
+export function summarizeDistance(measured) {
+  const rows = measured.samples;
+  const hasSurface = rows.some((row) => row[2] !== false);
+  const result = {
+    from: measured.from,
+    to: measured.to,
+    fps: measured.fps,
+    frames: rows.map((row) => row[0]),
+    distance: rows.map((row) => row[1]),
+  };
+  const closest = rows.reduce((best, row) => (row[1] < best[1] ? row : best));
+  result.closest = { frame: closest[0], distance: closest[1] };
+  if (hasSurface) {
+    result.toSize = measured.toSize;
+    result.gap = rows.map((row) => row[2]);
+    const nearest = rows.reduce((best, row) => (row[2] < best[2] ? row : best));
+    result.nearestSurface = { frame: nearest[0], gap: nearest[2] };
+    // Runs of consecutive samples where the point is inside the part.
+    const inside = [];
+    rows.forEach((row, index) => {
+      if (row[2] >= 0) return;
+      if (index > 0 && rows[index - 1][2] < 0) inside.at(-1).toFrame = row[0];
+      else inside.push({ fromFrame: row[0], toFrame: row[0] });
+    });
+    if (inside.length > 0) result.inside = inside;
+  }
+  result.fromInToSpace = rows.map((row) => [row[3], row[4], row[5]]);
+  return result;
+}
+
+function relativeLabel(args) {
+  if (args.relative_to === undefined) return 'world';
+  return args.relative_to_item === undefined ? args.relative_to : `${args.relative_to_item}.${args.relative_to}`;
+}
 const TESTED_MOON_VERSIONS = [36000];
 
-export function createTools({ bridge, runLuau, captureWindow, composeSheet, annotateImage, allowExec = false }) {
+// `plugin` describes the Studio plugin this server ships: { version, state, target, reason }.
+export function createTools({ bridge, runLuau, captureWindow, composeSheet, annotateImage, plugin = {}, allowExec = false }) {
   let calibration = null;
   let shotCounter = 0;
 
@@ -180,11 +296,24 @@ export function createTools({ bridge, runLuau, captureWindow, composeSheet, anno
     }
   }
 
+  // Hides, for this view session only, whatever stands between the camera and the item.
+  async function clearView(item, notes) {
+    const cleared = await runLuau('view_reveal', { item, settleFrames: SETTLE_FRAMES });
+    if (!cleared.settled) notes.add(STALE_NOTE);
+    if (cleared.hidden.length > 0) {
+      const names = cleared.hidden.slice(0, 5).join(', ') + (cleared.hidden.length > 5 ? ', ...' : '');
+      notes.add(`Hidden for this image because they stood between the camera and the item: ${names}.`);
+    }
+    if (cleared.terrainInTheWay) notes.add('Terrain stands between the camera and the item and cannot be hidden; try another view.');
+  }
+
   // One view inside a session: position the timeline/camera, then capture.
-  // Restores a minimized Studio window once and retries.
-  async function shoot(step, maxWidth, outFile, notes, cropAspect) {
+  // `reveal` names an item whose line of sight is cleared first. Restores a
+  // minimized Studio window once and retries.
+  async function shoot(step, maxWidth, outFile, notes, cropAspect, reveal) {
     let view = await runLuau('view_step', { ...step, settleFrames: SETTLE_FRAMES });
     if (!view.settled) notes.add(STALE_NOTE);
+    if (reveal !== undefined) await clearView(reveal, notes);
     try {
       const shot = await captureViewport(view.viewport, maxWidth, outFile, cropAspect);
       return { view, shot };
@@ -225,7 +354,9 @@ export function createTools({ bridge, runLuau, captureWindow, composeSheet, anno
   // steady camera covers the whole motion.
   async function focusFraming(focus, frames) {
     const measured = await runLuau('sample', { item: focus.item, frames, parts: [] }, 120);
-    return framingFor(focus, { ...unionBounds(measured.frames), facing: measured.facing, viewport: measured.viewport });
+    const boxes = [...measured.frames];
+    for (const other of focus.with ?? []) boxes.push(...(await runLuau('sample', { item: other, frames, parts: [] }, 120)).frames);
+    return framingFor(focus, { ...unionBounds(boxes), facing: measured.facing, viewport: measured.viewport });
   }
 
   // Maps a point in viewport coordinates onto an image captured with
@@ -263,33 +394,52 @@ export function createTools({ bridge, runLuau, captureWindow, composeSheet, anno
           `${studio.moonVersion}. Tools may misbehave if its internals changed: check results with moon_scene and moon_screenshot.`,
       );
     }
+    const stale = (studio.items ?? []).filter((item) => item.stale).map((item) => item.path);
+    if (stale.length > 0) {
+      notes.push(
+        `Stale items (${stale.join(', ')}): the instance was removed or replaced after the file was opened, so keyframes ` +
+          'no longer reach it. Call moon_save, then moon_open_file with this file name to link them again.',
+      );
+    }
     return notes;
+  }
+
+  function notConnectedHint() {
+    if (plugin.state === 'installed' || plugin.state === 'updated') {
+      return (
+        `The MoonBridge Studio plugin was ${plugin.state} just now (${plugin.target}). Restart Roblox Studio so it loads, ` +
+        'open a place, and allow MoonBridge to make HTTP requests to 127.0.0.1 when Studio asks.'
+      );
+    }
+    if (plugin.state === 'current') {
+      return (
+        'Roblox Studio is not answering. Open a place in Studio in edit mode (restart Studio if it was already open ' +
+        'when the MoonBridge plugin was installed) and allow MoonBridge to make HTTP requests to 127.0.0.1 if Studio asks.'
+      );
+    }
+    return (
+      `The MoonBridge Studio plugin is not installed${plugin.reason ? ` (${plugin.reason})` : ''}. Run ` +
+      '`moon-animator-mcp install-plugin`, restart Roblox Studio, and allow its HTTP requests to 127.0.0.1.'
+    );
   }
 
   const tools = [
     {
       name: 'moon_status',
       description:
-        'Connection and state overview: whether the MoonBridge Studio plugin is connected, whether Moon Animator 2 ' +
-        'is loaded, the open animation file (name, fps, length, current frame, items), and the current viewport ' +
-        'size and edit camera. Call this first.',
+        'Call first. Reports whether Roblox Studio and Moon Animator 2 are ready, the open file (fps, length, frame) ' +
+        'with its items, and the viewport and camera, and says what to fix when something is missing.',
       inputSchema: { type: 'object', properties: {}, additionalProperties: false },
       async call() {
         const status = await bridge.status();
-        if (!status.pluginConnected) {
-          return [
-            text({
-              bridge: status,
-              hint:
-                'Open Roblox Studio with the MoonBridge plugin installed and allow its HTTP requests. To install the ' +
-                'plugin, run `moon-animator-mcp install-plugin` once (for example `npx -y github:DeepTutorAi/moon-animator-mcp ' +
-                'install-plugin`) and restart Studio.',
-            }),
-          ];
-        }
+        if (!status.pluginConnected) return [text({ connected: false, hint: notConnectedHint() })];
+
         const studio = await runLuau('status');
-        const result = { bridge: status, studio };
+        const result = { connected: true, plugin: status.pluginVersion, ...summarizeStudio(studio) };
         const notes = moonNotes(studio);
+        if (plugin.version && status.pluginVersion && status.pluginVersion !== plugin.version) {
+          notes.push(`Studio is running MoonBridge ${status.pluginVersion}; version ${plugin.version} is installed. Restart Roblox Studio to load it.`);
+        }
         if (notes.length > 0) result.notes = notes;
         return [text(result)];
       },
@@ -297,9 +447,9 @@ export function createTools({ bridge, runLuau, captureWindow, composeSheet, anno
     {
       name: 'moon_scene',
       description:
-        'Structure of the open Moon Animator file: file settings, every item (Camera, Rig, parts, effects) with its ' +
-        'property tracks, rig joints that have keyframes, keyframe frames with the easing used toward the next ' +
-        'keyframe, and event markers. Set values=true to include keyframe values (rig joints as pose relative to rest).',
+        'Tracks and keyframes of the open file. Per item: property tracks and keyed rig joints as {frames, ease} ' +
+        '(or eases, one per frame, when they differ), the names of unkeyed joints, and markers. An ease applies from ' +
+        'its keyframe toward the next. values=true adds a values list per track in the shape moon_set_keyframes takes.',
       inputSchema: {
         type: 'object',
         additionalProperties: false,
@@ -312,26 +462,21 @@ export function createTools({ bridge, runLuau, captureWindow, composeSheet, anno
     {
       name: 'moon_screenshot',
       description:
-        'Returns an image of the Roblox Studio 3D viewport only (no Studio panels). With `frame`, first moves the ' +
-        'Moon Animator timeline to that frame, so the image shows the cutscene through its animated camera. With ' +
-        '`camera`, views from a custom pose instead (useful to inspect a rig pose from any angle). The Moon ' +
-        'Animator window is hidden during capture, and the previous frame and camera are restored afterwards unless ' +
+        'Image of the Studio 3D viewport only. `frame` moves the Moon Animator timeline there first, so the image ' +
+        'shows the cutscene through its animated camera; `camera` views from a custom pose and `focus` frames one ' +
+        'item instead. The Moon Animator window is hidden for the capture; timeline and camera are put back unless ' +
         'restore=false.',
       inputSchema: {
         type: 'object',
         additionalProperties: false,
         properties: {
-          frame: { type: 'integer', minimum: 0, description: 'Moon Animator frame to show. Requires an open file.' },
+          frame: { type: 'integer', minimum: 0 },
           camera: CAMERA_SCHEMA,
           focus: FOCUS_SCHEMA,
-          restore: { type: 'boolean', default: true, description: 'Restore the previous timeline frame and camera afterwards.' },
-          hide_ui: { type: 'boolean', default: true, description: 'Hide the Moon Animator window while capturing.' },
+          restore: { type: 'boolean', default: true },
+          hide_ui: { type: 'boolean', default: true },
           max_width: { type: 'integer', minimum: 256, maximum: 2560, default: 1280 },
-          recalibrate: {
-            type: 'boolean',
-            default: false,
-            description: 'Force re-locating the viewport, e.g. after Studio panels were rearranged.',
-          },
+          recalibrate: { type: 'boolean', default: false, description: 'Locate the viewport again, e.g. after Studio panels moved.' },
         },
       },
       async call(args) {
@@ -347,7 +492,7 @@ export function createTools({ bridge, runLuau, captureWindow, composeSheet, anno
         const notes = new Set();
         const outFile = tempFile('shot');
         const session = { hideUi: args.hide_ui !== false, hideEffects: focus !== undefined, restore: args.restore !== false };
-        const { view, shot } = await withView(session, () => shoot({ frame, camera }, maxWidth, outFile, notes, cropAspect));
+        const { view, shot } = await withView(session, () => shoot({ frame, camera }, maxWidth, outFile, notes, cropAspect, focus?.item));
         const details = { image: { width: shot.width, height: shot.height }, frame: view.frame, camera: view.camera };
         if (view.frame !== undefined && view.fps) details.timeSeconds = Number((view.frame / view.fps).toFixed(3));
         if (view.subtitle) details.subtitle = view.subtitle;
@@ -358,10 +503,9 @@ export function createTools({ bridge, runLuau, captureWindow, composeSheet, anno
     {
       name: 'moon_storyboard',
       description:
-        'Contact sheet of the open Moon Animator cutscene: several frames captured through the animated camera and ' +
-        'laid out in a grid, each labeled with frame, time, shot number and subtitle text. Without `frames`, picks ' +
-        'the start, middle and end of each detected camera shot (or evenly spaced frames when the file has no ' +
-        'Camera item). Pass `camera` to view every frame from one fixed custom pose instead.',
+        'Contact sheet of the open file: frames in a grid, each labeled with frame, time, shot and subtitle. ' +
+        'Without `frames` it picks frames from every detected camera shot (evenly spaced when there is no Camera ' +
+        'item). `camera` or `focus` views every frame from one fixed pose instead of the cutscene camera.',
       inputSchema: {
         type: 'object',
         additionalProperties: false,
@@ -371,9 +515,8 @@ export function createTools({ bridge, runLuau, captureWindow, composeSheet, anno
             items: { type: 'integer', minimum: 0 },
             minItems: 1,
             maxItems: MAX_STORYBOARD_FRAMES,
-            description: 'Exact frames to show.',
           },
-          count: { type: 'integer', minimum: 2, maximum: MAX_STORYBOARD_FRAMES, default: 9, description: 'Upper bound on automatically picked frames.' },
+          count: { type: 'integer', minimum: 2, maximum: MAX_STORYBOARD_FRAMES, default: 9, description: 'Most frames to pick automatically.' },
           camera: CAMERA_SCHEMA,
           focus: FOCUS_SCHEMA,
           columns: { type: 'integer', minimum: 1, maximum: 6, default: 3 },
@@ -413,14 +556,14 @@ export function createTools({ bridge, runLuau, captureWindow, composeSheet, anno
             for (const frame of frames) {
               const file = tempFile('cell');
               cells.push({ file });
-              const { view } = await shoot({ frame, camera }, cellWidth, file, notes, cropAspect);
+              const { view } = await shoot({ frame, camera }, cellWidth, file, notes, cropAspect, focus?.item);
               const time = Number((view.frame / view.fps).toFixed(2));
               const shot = shotOf(view.frame);
               const label = [`f${view.frame}`, `${time}s`, shot ? `shot ${shot}` : null, view.subtitle ? `"${view.subtitle}"` : null]
                 .filter(Boolean)
                 .join('  ');
               cells.at(-1).label = label;
-              entries.push({ frame: view.frame, timeSeconds: time, shot, subtitle: view.subtitle, camera: view.camera });
+              entries.push({ frame: view.frame, timeSeconds: time, shot, subtitle: view.subtitle });
             }
           });
           const sheet = await composeSheet({ cells, columns: Math.min(columns, cells.length), outFile: sheetFile });
@@ -436,16 +579,16 @@ export function createTools({ bridge, runLuau, captureWindow, composeSheet, anno
     {
       name: 'moon_camera_path',
       description:
-        'Analyzes the camera of the open Moon Animator cutscene: detects cuts and lists each shot with its frame ' +
-        'range, duration, kind of movement (static, push-in, pull-out, travel, rotate, zoom), travel distance, ' +
-        'rotation, and start/end position, look direction and FOV. Also returns the camera keyframes and sampled ' +
-        'positions along the path. Values come from scrubbing the real timeline, so they match what Moon Animator plays.',
+        'Shot list of the cutscene camera, measured by scrubbing the timeline: cuts, and per shot its frames, ' +
+        'duration, movement (static, push-in, pull-out, travel, rotate, zoom), distance, rotation, and start/end ' +
+        'position, look direction and FOV, plus the camera keyframes. samples=true adds positions along the path.',
       inputSchema: {
         type: 'object',
         additionalProperties: false,
         properties: {
           from: { type: 'integer', minimum: 0, description: 'First frame (default 0).' },
           to: { type: 'integer', minimum: 0, description: 'Last frame (default: last keyframe).' },
+          samples: { type: 'boolean', default: false },
         },
       },
       async call(args) {
@@ -454,38 +597,31 @@ export function createTools({ bridge, runLuau, captureWindow, composeSheet, anno
         if (from !== undefined && to !== undefined && to < from) throw new Error('to must not be before from');
 
         const { path, analysis } = await cameraPath(from, to);
-        // Thin the per-frame samples for output, but keep both frames of every shot boundary.
-        const stride = Math.max(1, Math.ceil(path.samples.length / MAX_PATH_SAMPLES));
-        const boundaries = new Set(analysis.shots.flatMap((shot) => [shot.startFrame, shot.endFrame]));
-        const samples = path.samples
-          .filter((sample, index) => index % stride === 0 || boundaries.has(sample[0]))
-          .map((s) => ({
-            frame: s[0],
-            position: [s[1], s[2], s[3]],
-            look: [s[4], s[5], s[6]].map((n) => Number(n.toFixed(3))),
-            fov: s[7],
-          }));
-
-        return [
-          text({
-            fps: path.fps,
-            range: { from: path.from, to: path.to, lastKeyframe: path.lastKeyframe },
-            cuts: analysis.cuts,
-            shots: analysis.shots,
-            keyframes: path.tracks,
-            samples,
-          }),
-        ];
+        const result = {
+          fps: path.fps,
+          range: { from: path.from, to: path.to, lastKeyframe: path.lastKeyframe },
+          cuts: analysis.cuts,
+          shots: analysis.shots,
+          keyframes: path.tracks,
+        };
+        if (args.samples === true) {
+          // Thin the per-frame samples for output, but keep both frames of every shot boundary.
+          const stride = Math.max(1, Math.ceil(path.samples.length / MAX_PATH_SAMPLES));
+          const boundaries = new Set(analysis.shots.flatMap((shot) => [shot.startFrame, shot.endFrame]));
+          result.sampleColumns = ['frame', 'x', 'y', 'z', 'lookX', 'lookY', 'lookZ', 'fov'];
+          result.samples = path.samples
+            .filter((sample, index) => index % stride === 0 || boundaries.has(sample[0]))
+            .map((s) => [s[0], s[1], s[2], s[3], ...[s[4], s[5], s[6]].map((n) => Number(n.toFixed(3))), s[7]]);
+        }
+        return [text(result)];
       },
     },
     {
       name: 'moon_preview_pose',
       description:
-        'Shows what a pose would look like WITHOUT creating keyframes. Applies joint rotations/positions (same ' +
-        'convention as moon_set_keyframes) on top of the animation at `frame` (default: the current frame), returns ' +
-        'images of the item from the requested sides plus the resulting world positions of its parts, then puts ' +
-        'the animation back. Use it to find the right angles before committing them, and `relative_to` to read ' +
-        'part positions in another part\'s local space (e.g. where the hand is relative to the head).',
+        'Shows a pose WITHOUT creating keyframes: applies joint rotations/positions (as in moon_set_keyframes) on ' +
+        'top of the animation at `frame` (default: current), returns images from the given sides and the positions ' +
+        'of `parts` (world, or local to `relative_to`), then puts the animation back.',
       inputSchema: {
         type: 'object',
         additionalProperties: false,
@@ -509,8 +645,10 @@ export function createTools({ bridge, runLuau, captureWindow, composeSheet, anno
             },
           },
           views: { type: 'array', items: { type: 'string', enum: VIEWS }, minItems: 1, maxItems: 4, default: ['front', 'right'] },
-          parts: { type: 'array', items: { type: 'string' }, description: 'Limit reported positions to these parts.' },
-          relative_to: { type: 'string', description: 'Report positions in this part\'s local space.' },
+          parts: { type: 'array', items: { type: 'string' }, description: 'Parts or bones to report positions for (default: none).' },
+          relative_to: { type: 'string', description: 'Report positions in the local space of this part.' },
+          relative_to_item: RELATIVE_ITEM,
+          with: { type: 'array', items: { type: ['string', 'integer'] }, maxItems: 4, description: 'Other items to keep in frame.' },
           cell_width: { type: 'integer', minimum: 160, maximum: 960, default: 420 },
         },
       },
@@ -521,6 +659,7 @@ export function createTools({ bridge, runLuau, captureWindow, composeSheet, anno
         }
         const frame = integer(args.frame, 'frame', 0, 1_000_000, undefined);
         const cellWidth = integer(args.cell_width, 'cell_width', 160, 960, 420);
+        const others = itemList(args.with, 'with');
         const views = args.views ?? ['front', 'right'];
         if (!Array.isArray(views) || views.length < 1 || views.length > 4 || !views.every((view) => VIEWS.includes(view))) {
           throw new Error(`views must list 1 to 4 of: ${VIEWS.join(', ')}`);
@@ -536,24 +675,27 @@ export function createTools({ bridge, runLuau, captureWindow, composeSheet, anno
             posed = await runLuau('view_pose', {
               item: args.item,
               joints: args.joints,
-              parts: args.parts,
+              parts: args.parts ?? [],
               relativeTo: args.relative_to,
+              relativeToItem: args.relative_to_item,
             });
+            // The other items as they stand on this frame, so the view holds them too.
+            const boxes = [posed];
+            for (const other of others) boxes.push(...(await runLuau('sample', { item: other, parts: [] })).frames);
+            const bounds = { ...posed, ...unionBounds(boxes) };
             for (const view of views) {
               const file = tempFile('cell');
               cells.push({ file, label: view });
-              const { camera, cropAspect } = framingFor({ view, margin: 1.15 }, posed);
-              await shoot({ camera }, cellWidth, file, notes, cropAspect);
+              const { camera, cropAspect } = framingFor({ view, margin: 1.15 }, bounds);
+              await shoot({ camera }, cellWidth, file, notes, cropAspect, args.item);
             }
           });
           const sheet = await composeSheet({ cells, columns: cells.length, outFile: sheetFile });
-          const details = {
-            image: { width: sheet.width, height: sheet.height },
-            frame: posed.frame,
-            views,
-            positions: posed.parts,
-            positionsRelativeTo: args.relative_to ?? 'world',
-          };
+          const details = { image: { width: sheet.width, height: sheet.height }, frame: posed.frame, views };
+          if (args.parts !== undefined) {
+            details.positions = posed.parts;
+            details.positionsRelativeTo = relativeLabel(args);
+          }
           if (notes.size > 0) details.notes = [...notes];
           return [{ type: 'image', data: readImage(sheetFile), mimeType: 'image/jpeg' }, text(details)];
         } finally {
@@ -565,11 +707,9 @@ export function createTools({ bridge, runLuau, captureWindow, composeSheet, anno
     {
       name: 'moon_motion_trail',
       description:
-        'Timing view: an image of an item with the paths its parts travel between two frames drawn over it, one ' +
-        'colored trail per part with a dot on every sampled frame, so dots far apart mean fast motion and dots ' +
-        'bunched together mean slow motion or a hold. Also returns numbers per part: path length, peak speed and ' +
-        'the frame it happens on, the ranges where the part holds still, and speed per interval. Defaults to the ' +
-        'head, hands and feet. Use it to judge spacing, arcs and easing, which single frames cannot show.',
+        'Timing view: image of an item with the path each part travels between two frames, one dot per sampled ' +
+        'frame (wide gaps are fast, clusters are slow or held). Returns per part the path length, peak speed and ' +
+        'its frame, and the ranges it holds still; detail=true adds speed per interval. Default parts: head, hands, feet.',
       inputSchema: {
         type: 'object',
         additionalProperties: false,
@@ -582,6 +722,7 @@ export function createTools({ bridge, runLuau, captureWindow, composeSheet, anno
           step: { type: 'integer', minimum: 1, description: 'Frames between dots (default: about 40 dots).' },
           at: { type: 'integer', minimum: 0, description: 'Frame whose pose is shown under the trails (default: `to`).' },
           view: { type: 'string', enum: VIEWS, default: 'front' },
+          detail: { type: 'boolean', default: false },
           max_width: { type: 'integer', minimum: 256, maximum: 2560, default: 900 },
         },
       },
@@ -612,7 +753,7 @@ export function createTools({ bridge, runLuau, captureWindow, composeSheet, anno
         const outFile = tempFile('trail');
         try {
           const { view: shown, shot } = await withView({ hideUi: true, hideEffects: true, restore: true }, () =>
-            shoot({ frame: at, camera }, maxWidth, outFile, notes, cropAspect),
+            shoot({ frame: at, camera }, maxWidth, outFile, notes, cropAspect, args.item),
           );
 
           const shapes = [];
@@ -632,7 +773,8 @@ export function createTools({ bridge, runLuau, captureWindow, composeSheet, anno
               }
             });
             shapes.push({ type: 'text', x: 8, y: 6 + index * 16, text: name, color });
-            report.push({ part: name, color: `rgb(${color.join(',')})`, ...motionStats(samples, trail.fps) });
+            const { speeds, ...stats } = motionStats(samples, trail.fps);
+            report.push({ part: name, color: `rgb(${color.join(',')})`, ...stats, ...(args.detail === true ? { speeds } : {}) });
           });
           await annotateImage({ file: outFile, shapes });
 
@@ -640,7 +782,7 @@ export function createTools({ bridge, runLuau, captureWindow, composeSheet, anno
             image: { width: shot.width, height: shot.height },
             poseShownAtFrame: shown.frame,
             range: { from, to, step, fps: trail.fps },
-            howToRead: 'One dot per sampled frame; numbers beside dots are frames. Wide gaps are fast, tight clusters are slow or held.',
+            units: 'pathStuds in studs, peakSpeed in studs per second; numbers beside dots are frames',
             parts: report,
           };
           if (notes.size > 0) details.notes = [...notes];
@@ -653,10 +795,9 @@ export function createTools({ bridge, runLuau, captureWindow, composeSheet, anno
     {
       name: 'moon_sample',
       description:
-        'Measures an item of the open file over time: the position of its parts on each sampled frame (world ' +
-        'space, or the local space of `relative_to`), plus a ground-contact report for `contact_parts` (default: ' +
-        'parts with "Foot" in the name) listing how far each slides while planted. Use it to check foot sliding, ' +
-        'hand-to-face distance, jump height or travel with numbers instead of judging from images.',
+        'Measures an item over frames: a ground-contact report (how far each of `contact_parts`, default the feet, ' +
+        'slides while planted) and, for `parts`, their positions per frame in world space or local to ' +
+        '`relative_to`. Use it for foot sliding, hand-to-face distance, jump height or travel.',
       inputSchema: {
         type: 'object',
         additionalProperties: false,
@@ -667,61 +808,86 @@ export function createTools({ bridge, runLuau, captureWindow, composeSheet, anno
           from: { type: 'integer', minimum: 0 },
           to: { type: 'integer', minimum: 0 },
           step: { type: 'integer', minimum: 1, description: 'Frames between samples (default: about 40 samples).' },
-          parts: { type: 'array', items: { type: 'string' }, description: 'Limit reported positions to these parts.' },
+          parts: { type: 'array', items: { type: 'string' }, maxItems: 12, description: 'Parts or bones to report positions for (default: none).' },
           relative_to: { type: 'string' },
-          contact_parts: { type: 'array', items: { type: 'string' } },
+          relative_to_item: RELATIVE_ITEM,
+          contact_parts: { type: 'array', items: { type: 'string' }, maxItems: 12 },
         },
       },
       async call(args) {
         if (typeof args.item !== 'string' && !Number.isInteger(args.item)) throw new Error('item must be an item name, path or index');
-        let frames = args.frames;
-        if (frames !== undefined) {
-          if (!Array.isArray(frames) || frames.length < 1 || frames.length > 400) throw new Error('frames must list 1 to 400 frames');
-          frames.forEach((value, index) => integer(value, `frames[${index}]`, 0, 1_000_000));
-        } else {
-          const timeline = await runLuau('timeline');
-          const from = integer(args.from, 'from', 0, 1_000_000, 0);
-          const to = integer(args.to, 'to', 0, 1_000_000, timeline.lastKeyframe);
-          if (to < from) throw new Error('to must not be before from');
-          const step = integer(args.step, 'step', 1, 1_000_000, Math.max(1, Math.ceil((to - from) / 40)));
-          frames = [];
-          for (let frame = from; frame <= to; frame += step) frames.push(frame);
-          if (frames.at(-1) !== to) frames.push(to);
-          if (frames.length > 400) throw new Error('that range and step give more than 400 samples; use a larger step');
-        }
+        const frames = await frameList(args, runLuau, 400);
 
-        const wantsContacts = args.relative_to === undefined;
-        const measured = await runLuau('sample', { item: args.item, frames, relativeTo: args.relative_to }, 120);
-        const allParts = Object.keys(measured.frames[0]?.parts ?? {});
-        const contactParts = args.contact_parts ?? allParts.filter((name) => /foot/i.test(name));
-        const shown = args.parts ? new Set(args.parts) : null;
-        if (shown) {
-          const unknown = [...shown].filter((name) => !allParts.includes(name));
-          if (unknown.length > 0) throw new Error(`unknown part(s): ${unknown.join(', ')} (parts: ${allParts.join(', ')})`);
+        for (const key of ['parts', 'contact_parts']) {
+          const names = args[key];
+          if (names !== undefined && (!Array.isArray(names) || names.length > 12 || !names.every((name) => typeof name === 'string'))) {
+            throw new Error(`${key} must list at most 12 names`);
+          }
         }
-
-        const result = {
-          item: measured.item,
-          fps: measured.fps,
-          positionsRelativeTo: args.relative_to ?? 'world',
-          samples: measured.frames.map((frame) => ({
-            frame: frame.frame,
-            parts: shown ? Object.fromEntries(Object.entries(frame.parts).filter(([name]) => shown.has(name))) : frame.parts,
-          })),
-        };
         // Ground contact only makes sense in world space.
-        if (wantsContacts) result.contacts = analyzeContacts(measured.frames, contactParts);
+        const wantsContacts = args.relative_to === undefined;
+        const measured = await runLuau(
+          'sample',
+          {
+            item: args.item,
+            frames,
+            parts: args.parts ?? [],
+            contactParts: wantsContacts ? args.contact_parts : undefined,
+            autoContacts: wantsContacts && args.contact_parts === undefined,
+            relativeTo: args.relative_to,
+            relativeToItem: args.relative_to_item,
+          },
+          120,
+        );
+
+        const result = { item: measured.item, fps: measured.fps, frames: measured.frames.map((frame) => frame.frame) };
+        if (args.parts?.length > 0) {
+          result.positionsRelativeTo = relativeLabel(args);
+          result.positions = Object.fromEntries(args.parts.map((name) => [name, measured.frames.map((frame) => frame.parts[name])]));
+        } else {
+          result.availableParts = measured.partNames;
+        }
+        if (wantsContacts) result.contacts = analyzeContacts(measured.frames, measured.contactParts);
         return [text(result)];
+      },
+    },
+    {
+      name: 'moon_measure',
+      description:
+        'Distance between two points on any items over frames, e.g. a fist and an opponent\'s head, or how far ' +
+        'apart two characters stand. A point is a part or bone of an item, optionally shifted by an offset in that ' +
+        'part\'s local space. Per frame: distance between the points, gap from the `from` point to the surface of ' +
+        'the `to` part (negative when inside it), and the `from` point in the `to` part\'s local space. Also the ' +
+        'closest frame and the frames spent inside.',
+      inputSchema: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['from', 'to'],
+        properties: {
+          from: POINT_SCHEMA,
+          to: POINT_SCHEMA,
+          frames: { type: 'array', items: { type: 'integer', minimum: 0 }, minItems: 1, maxItems: 400 },
+          from_frame: { type: 'integer', minimum: 0 },
+          to_frame: { type: 'integer', minimum: 0 },
+          step: { type: 'integer', minimum: 1, description: 'Frames between samples (default: about 40 samples).' },
+        },
+      },
+      async call(args) {
+        const from = pointSpec(args.from, 'from');
+        const to = pointSpec(args.to, 'to');
+        const frames = await frameList({ frames: args.frames, from: args.from_frame, to: args.to_frame, step: args.step }, runLuau, 400);
+        const measured = await runLuau('distance', { from, to, frames }, 120);
+        return [text(summarizeDistance(measured))];
       },
     },
     {
       name: 'moon_solve_reach',
       description:
-        'Inverse kinematics by measurement: finds rotations for the listed joints that bring `end_part` (e.g. a ' +
-        'hand, a foot, a held prop) to `target`, a point in world space or in the local space of `relative_to` ' +
-        '(e.g. just in front of the Head for a microphone at the mouth). Starts from the animated pose at `frame`, ' +
-        'changes nothing permanently, and returns rotations ready to pass to moon_set_keyframes or ' +
-        'moon_preview_pose, with the remaining distance. Limit a hinge with axes (e.g. "x" for an elbow or knee).',
+        'Inverse kinematics by measurement: finds rotations for `joints` that bring `end_part` (a hand, foot or ' +
+        'held prop) to `target`, a point in world space or local to `relative_to`, which with `relative_to_item` ' +
+        'can be a part of another item (an opponent\'s Head). Starts from the pose at `frame`, ' +
+        'changes nothing, and returns rotations for moon_set_keyframes or moon_preview_pose with the remaining ' +
+        'distance. Limit a hinge with axes, e.g. "x" for an elbow or knee.',
       inputSchema: {
         type: 'object',
         additionalProperties: false,
@@ -731,8 +897,9 @@ export function createTools({ bridge, runLuau, captureWindow, composeSheet, anno
           frame: { type: 'integer', minimum: 0 },
           end_part: { type: 'string' },
           target: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
-          relative_to: { type: 'string', description: 'Part whose local space the target is given in. Omit for world space.' },
-          tolerance: { type: 'number', minimum: 0, default: 0.05, description: 'Distance in studs that counts as reached.' },
+          relative_to: { type: 'string' },
+          relative_to_item: RELATIVE_ITEM,
+          tolerance: { type: 'number', minimum: 0, default: 0.05, description: 'Studs that count as reached.' },
           joints: {
             type: 'array',
             minItems: 1,
@@ -744,8 +911,8 @@ export function createTools({ bridge, runLuau, captureWindow, composeSheet, anno
               properties: {
                 joint: { type: 'string' },
                 axes: { type: 'string', pattern: '^[xyzXYZ]{1,3}$', default: 'xyz' },
-                min: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: 'Lowest XYZ angles in degrees.' },
-                max: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: 'Highest XYZ angles in degrees.' },
+                min: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: 'Lowest XYZ degrees.' },
+                max: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
               },
             },
           },
@@ -772,6 +939,7 @@ export function createTools({ bridge, runLuau, captureWindow, composeSheet, anno
               endPart: args.end_part,
               target: args.target,
               relativeTo: args.relative_to,
+              relativeToItem: args.relative_to_item,
               tolerance: args.tolerance,
               joints: args.joints,
             }),

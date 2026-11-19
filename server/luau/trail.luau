@@ -7,22 +7,33 @@
 requireFile()
 
 local instance = measurable(findItem(ARGS.item))
+local settlePose = poseSettler(instance)
 
 local parts = {}
 if ARGS.parts then
 	for _, name in ipairs(ARGS.parts) do
 		local part = findPart(instance, name)
 		if not part then
-			fail(string.format("'%s' is not a part of %s", tostring(name), instance:GetFullName()))
+			fail(string.format("'%s' is not a part or bone of %s", tostring(name), instance:GetFullName()))
 		end
 		table.insert(parts, part)
 	end
 else
 	-- Default to the ends of the limbs and the head: they carry the motion.
+	local function carriesMotion(candidate)
+		local name = string.lower(candidate.Name)
+		return string.find(name, "hand", 1, true) or string.find(name, "foot", 1, true) or name == "head"
+	end
 	for _, part in ipairs(visibleParts(instance)) do
-		local name = string.lower(part.Name)
-		if string.find(name, "hand", 1, true) or string.find(name, "foot", 1, true) or name == "head" then
+		if carriesMotion(part) then
 			table.insert(parts, part)
+		end
+	end
+	if #parts == 0 then
+		for _, descendant in ipairs(instance:GetDescendants()) do
+			if descendant:IsA("Bone") and carriesMotion(descendant) then
+				table.insert(parts, descendant)
+			end
 		end
 	end
 	table.sort(parts, function(a, b)
@@ -53,13 +64,14 @@ end
 local ok, err = pcall(function()
 	for index, frame in ipairs(ARGS.frames) do
 		LS:SetSliderFrame(frame)
+		settlePose()
 		-- The file's own camera track moves the camera on every frame; put ours back.
 		camera.CameraType = Enum.CameraType.Scriptable
 		camera.CFrame = viewCFrame
 		camera.CameraType = Enum.CameraType.Custom
 		camera.FieldOfView = view.fov
 		for _, part in ipairs(parts) do
-			local position = part.Position
+			local position = worldCFrame(part).Position
 			local screen = camera:WorldToViewportPoint(position)
 			table.insert(tracks[part.Name], {
 				LS.SliderFrame,

@@ -17,15 +17,81 @@ local function itemPath(itemObject)
 	return table.concat(itemObject.Path.InstanceNames, ".")
 end
 
--- An item reference is its 1-based index, its full path, its instance name, or "camera".
-local function findItem(ref)
+-- Why an item's tracks no longer drive anything, or nil when they do. Tracks
+-- keep the instances they were built for, so an instance that was deleted, or
+-- replaced by another one of the same name, leaves them aimed at the old one.
+local function staleReason(itemObject)
+	local instance = itemObject.Path:GetItem()
+	if not instance then
+		return "missing"
+	end
+	if LS.LayerHandler.ItemMap[instance:GetDebugId(8)] ~= itemObject then
+		return "replaced"
+	end
+	return nil
+end
+
+-- Moon Animator indexes items by the instance they were added for and asserts
+-- on that index when an item is removed or the file is closed. After an
+-- instance was replaced, the index still holds the old one and those
+-- operations fail partway. This points the index at the instance the item's
+-- path now resolves to. The item's tracks stay aimed at the old instance, so
+-- call it only right before removing the item or closing the file.
+local function rekeyItem(itemObject)
+	local map = LS.LayerHandler.ItemMap
+	local instance = itemObject.Path:GetItem()
+	if not instance then
+		return
+	end
+	local key = instance:GetDebugId(8)
+	if map[key] ~= nil then
+		return
+	end
+	for existing, owner in pairs(map) do
+		if owner == itemObject then
+			map[existing] = nil
+		end
+	end
+	map[key] = itemObject
+end
+
+-- Closes the open file. Moon Animator would otherwise fail on a replaced instance.
+local function closeFile()
+	for _, container in ipairs(LS.LayerHandler.LayerContainer.Objects) do
+		rekeyItem(container.ItemObject)
+	end
+	Win.CloseFile()
+end
+
+local function requireLinked(itemObject)
+	local reason = staleReason(itemObject)
+	if reason == "missing" then
+		fail(itemPath(itemObject) .. " no longer exists in the place; put it back, or remove the item with moon_remove_items")
+	elseif reason == "replaced" then
+		fail(string.format(
+			"%s was replaced by another instance of the same name after the file was opened, so its tracks still "
+				.. "drive the old one; call moon_save, then moon_open_file with name '%s' to link them to the new instance",
+			itemPath(itemObject),
+			LS.CurrentFile.Name
+		))
+	end
+	return itemObject
+end
+
+-- An item reference is its 1-based index, its full path, its instance name, or
+-- "camera". Items whose instance is gone or was replaced are refused unless
+-- `allowStale` is set.
+local function findItem(ref, allowStale)
+	local check = if allowStale then function(itemObject)
+		return itemObject
+	end else requireLinked
 	local objects = LS.LayerHandler.LayerContainer.Objects
 	if type(ref) == "number" then
 		local container = objects[ref]
 		if not container then
 			fail(string.format("there is no item at index %d", ref))
 		end
-		return container.ItemObject
+		return check(container.ItemObject)
 	end
 
 	local matches, known = {}, {}
@@ -48,12 +114,43 @@ local function findItem(ref)
 	elseif #matches > 1 then
 		fail(string.format("item '%s' is ambiguous; use its full path or index", ref))
 	end
-	return matches[1]
+	return check(matches[1])
+end
+
+-- Property entries ({ name, valueType, ... }) a Moon Animator item type can
+-- animate. A string entry in the table refers to another type's list.
+local function supportedProperties(itemType, into)
+	for _, entry in ipairs(Moon.ItemTable.Items[itemType] or {}) do
+		if type(entry) == "string" then
+			supportedProperties(entry, into)
+		else
+			table.insert(into, entry)
+		end
+	end
+	return into
+end
+
+-- Adds property tracks to an item that is already in the file (one undo step).
+local function addPropertyTracks(itemObject, names)
+	local list = {}
+	if itemObject.RigContainer then
+		table.insert(list, "Rig")
+	end
+	for name in pairs(itemObject.PropertyMap) do
+		table.insert(list, name)
+	end
+	for _, name in ipairs(names) do
+		table.insert(list, name)
+	end
+	Win.DoCompositeAction("EditItems", { ItemList = { itemObject }, PropList = list })
 end
 
 -- Returns the track and whether it is a rig joint track. A joint may be given
 -- by its full hierarchy path or by a unique trailing part of it (e.g. "Head").
-local function findTrack(itemObject, spec)
+-- With `allowMissing`, a property the item type supports but has no track for
+-- yet comes back as a stand-in { pending, itemObject, property, PropertyData },
+-- enough to validate values before the caller adds the track.
+local function findTrack(itemObject, spec, allowMissing)
 	if spec.joint ~= nil then
 		if not itemObject.RigContainer then
 			fail(itemPath(itemObject) .. " has no rig joints")
@@ -80,6 +177,18 @@ local function findTrack(itemObject, spec)
 	elseif spec.property ~= nil then
 		local track = itemObject.PropertyMap[spec.property]
 		if not track then
+			for _, entry in ipairs(supportedProperties(itemObject.Path.ItemType, {})) do
+				if entry[1] == spec.property then
+					if allowMissing then
+						return { pending = true, itemObject = itemObject, property = spec.property, PropertyData = entry }, false
+					end
+					fail(string.format(
+						"%s has no '%s' track yet; key it with moon_set_keyframes, which adds the track",
+						itemPath(itemObject),
+						spec.property
+					))
+				end
+			end
 			local known = {}
 			for name in pairs(itemObject.PropertyMap) do
 				table.insert(known, name)

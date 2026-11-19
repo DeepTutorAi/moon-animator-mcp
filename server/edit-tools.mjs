@@ -9,8 +9,7 @@ const EASE_SCHEMA = {
   type: 'object',
   additionalProperties: false,
   required: ['type'],
-  description:
-    'Easing from this keyframe toward the next one. Omitted: Linear for a new keyframe, unchanged for an existing one.',
+  description: 'Easing from this keyframe toward the next. Omitted: Linear for a new keyframe, unchanged for an existing one.',
   properties: {
     type: {
       type: 'string',
@@ -25,11 +24,11 @@ const EASE_SCHEMA = {
 
 const ITEM_REF = {
   type: ['string', 'integer'],
-  description: 'Item in the open file: its instance name, full path, 1-based index, or "camera".',
+  description: 'Item: instance name, full path, 1-based index, or "camera".',
 };
 
 function text(value) {
-  return { type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value, null, 2) };
+  return { type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value) };
 }
 
 function list(value, name, max) {
@@ -65,9 +64,10 @@ export function createEditTools({ runLuau }) {
     {
       name: 'moon_open_file',
       description:
-        'Opens a Moon Animator file by name (files live in ServerStorage.MoonAnimator2Saves), closing the current ' +
-        'one. With create=true a missing file is created and saved. Refuses to drop unsaved changes unless ' +
-        'discard_changes=true. Opening a file clears Moon Animator undo history, as it does in the UI.',
+        'Opens a Moon Animator file by name (ServerStorage.MoonAnimator2Saves), closing the current one; ' +
+        'create=true makes a missing file. Naming the file that is already open reloads it from its saved state, ' +
+        'which also re-links items whose instances were replaced. Unsaved changes block this unless ' +
+        'discard_changes=true. Clears Moon Animator undo history.',
       inputSchema: {
         type: 'object',
         additionalProperties: false,
@@ -93,8 +93,8 @@ export function createEditTools({ runLuau }) {
     {
       name: 'moon_settings',
       description:
-        'Changes settings of the open file: timeline length in frames, loop, and export priority. With no ' +
-        'arguments it just reports the current settings and whether there are unsaved changes.',
+        'Reports the settings of the open file and whether it has unsaved changes; with arguments changes ' +
+        'timeline length (frames), loop, export priority or fps.',
       inputSchema: {
         type: 'object',
         additionalProperties: false,
@@ -102,13 +102,33 @@ export function createEditTools({ runLuau }) {
           length: { type: 'integer', minimum: 60, description: 'Timeline length in frames.' },
           loop: { type: 'boolean' },
           priority: { type: 'string', description: 'Enum.AnimationPriority name, e.g. Action.' },
+          fps: { type: 'integer', minimum: 1, maximum: 999 },
+          keep_timing: {
+            type: 'boolean',
+            default: false,
+            description:
+              'With fps: move keyframes so timing in seconds is kept. Frame numbers change, and at a lower fps keyframes ' +
+              'that land on the same frame merge (a camera cut on neighbouring frames is lost).',
+          },
         },
       },
       call: (args) => {
         if (args.length !== undefined && (!Number.isInteger(args.length) || args.length < 60)) {
           throw new Error('length must be an integer of at least 60 frames');
         }
-        return run('file_ops', { op: 'settings', length: args.length, loop: args.loop, priority: args.priority });
+        if (args.fps !== undefined && (!Number.isInteger(args.fps) || args.fps < 1 || args.fps > 999)) {
+          throw new Error('fps must be an integer from 1 to 999');
+        }
+        if (args.keep_timing === true && args.fps === undefined) throw new Error('keep_timing only applies with fps');
+        if (args.keep_timing === true && args.length !== undefined) throw new Error('change length separately from an fps change that keeps timing');
+        return run('file_ops', {
+          op: 'settings',
+          length: args.length,
+          loop: args.loop,
+          priority: args.priority,
+          fps: args.fps,
+          keepTiming: args.keep_timing === true,
+        });
       },
     },
     {
@@ -157,12 +177,11 @@ export function createEditTools({ runLuau }) {
     {
       name: 'moon_attach_prop',
       description:
-        'Joins a prop to a part of a rig with a Motor6D, so it becomes an animatable joint of that rig (like Moon ' +
-        "Animator's Easy Weld). Give `source` to copy an existing Model, part, Tool or Accessory (the original " +
-        'is left alone; scripts inside the copy are removed), or `parts` to build one from primitives (the first ' +
-        'part is the handle, later parts are placed relative to it). grip places the handle relative to the rig ' +
-        'part. If the rig is already in the open file, the file must be saved; it is then reloaded so the new ' +
-        'joint gets a track (keyframes are kept, Moon Animator undo history is cleared).',
+        'Joins a prop to a rig part with a Motor6D, making it an animatable joint of that rig. Give `source` to ' +
+        'copy an existing Model, part, Tool or Accessory (the original stays; scripts in the copy are removed) or ' +
+        '`parts` to build one from primitives (the first is the handle). grip places the handle relative to the ' +
+        'rig part. A rig already in the open file needs the file saved; it is reloaded so the joint gets a track ' +
+        '(keyframes kept, undo history cleared).',
       inputSchema: {
         type: 'object',
         additionalProperties: false,
@@ -172,7 +191,7 @@ export function createEditTools({ runLuau }) {
           attach_to: { type: 'string', description: 'Rig part to hold the prop, e.g. RightHand.' },
           name: { type: 'string', minLength: 1, description: 'Joint and handle name; must be unique inside the rig.' },
           source: { type: 'string', description: 'Path of an existing instance to copy, e.g. Workspace.Guitar.' },
-          handle: { type: 'string', description: 'With source: the part to grip (default: PrimaryPart, a part named Handle, or the first part).' },
+          handle: { type: 'string', description: 'With source: the part to grip (default: PrimaryPart, Handle, or the first part).' },
           grip: {
             type: 'object',
             additionalProperties: false,
@@ -219,10 +238,10 @@ export function createEditTools({ runLuau }) {
     {
       name: 'moon_add_items',
       description:
-        'Adds instances to the open file as Moon Animator items. path is an instance path such as ' +
-        'Workspace.Dancer, or one of the shortcuts camera, subtitles, letterbox, vignette, screen_cover. A rig ' +
-        'gets its joint tracks; other items get their default properties unless properties is given. Returns the ' +
-        'joint names of added rigs.',
+        'Adds instances to the open file as items. path is an instance path such as Workspace.Dancer or a ' +
+        'shortcut: camera, subtitles, letterbox, vignette, screen_cover. A rig gets its joint tracks (names are ' +
+        'returned); other items get default properties unless `properties` is given. For an instance already in ' +
+        'the file, adds the listed property tracks.',
       inputSchema: {
         type: 'object',
         additionalProperties: false,
@@ -251,6 +270,23 @@ export function createEditTools({ runLuau }) {
       },
     },
     {
+      name: 'moon_remove_items',
+      description:
+        'Removes items and their keyframes from the open file as one undo step. The instances stay in the place.',
+      inputSchema: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['items'],
+        properties: { items: { type: 'array', minItems: 1, maxItems: 20, items: ITEM_REF } },
+      },
+      call: (args) => {
+        list(args.items, 'items', 20).forEach((item, index) => {
+          if (typeof item !== 'string' && !Number.isInteger(item)) throw new Error(`items[${index}] must be an item name, path or index`);
+        });
+        return run('remove_items', { items: args.items });
+      },
+    },
+    {
       name: 'moon_set_keyframes',
       description:
         'Adds or updates keyframes in the open file as ONE undo step. For a rig joint give `joint` (full hierarchy ' +
@@ -258,8 +294,8 @@ export function createEditTools({ runLuau }) {
         'to the rest pose in the joint frame: for a rig facing -Z, +X rotation swings a limb forward / leans the ' +
         'torso back, +Y turns left, +Z raises the right side. For a property give `property` and `value` ' +
         '(number, boolean, string, [x,y,z], [r,g,b], or for CFrame {position, rotation} or {position, look_at}). ' +
-        'Rotations interpolate along the shortest path, so key a spin at least every 120 degrees. Easing applies ' +
-        'from a keyframe toward the next one.',
+        'Rotations interpolate along the shortest path, so key a spin at least every 120 degrees. A property the ' +
+        'item supports but has no track for yet (e.g. LookAtPart on the camera) gets its track automatically.',
       inputSchema: {
         type: 'object',
         additionalProperties: false,

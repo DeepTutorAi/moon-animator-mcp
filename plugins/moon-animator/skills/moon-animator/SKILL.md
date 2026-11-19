@@ -1,6 +1,6 @@
 ---
 name: moon-animator
-description: Field guide for animating in Roblox Studio through the moon-animator-mcp tools (moon_status, moon_storyboard, moon_set_keyframes, moon_spin, moon_solve_reach, moon_export and the rest). Use it whenever the user wants to create, pose, review, fix or export a Moon Animator 2 animation or cutscene, including character animation, dances, flips, held props, camera shots, subtitles and letterbox, or asks what a Moon Animator file looks like, even if they only say "animate this rig" or "make a cutscene in Studio" while the moon_* tools are available.
+description: Field guide for animating in Roblox Studio through the moon-animator-mcp tools (moon_status, moon_storyboard, moon_set_keyframes, moon_spin, moon_solve_reach, moon_export and the rest). Use it whenever the user wants to create, pose, review, fix or export a Moon Animator 2 animation or cutscene, including character animation, dances, flips, held props, camera shots, subtitles and letterbox, or asks what a Moon Animator file looks like, even if they only say "animate this rig" or "make a cutscene in Studio" while the moon_* tools are available. Not for animating in other tools such as Blender or Roblox's built-in Animation Editor.
 ---
 
 # Animating with Moon Animator 2 through MCP
@@ -20,7 +20,7 @@ Call `moon_status`. It tells you which of these is missing:
 | Requirement | If missing |
 | --- | --- |
 | Roblox Studio open in edit mode (not playing) | Ask the user to open the place and stop any play test. |
-| MoonBridge plugin connected | The user runs `npx -y github:DeepTutorAi/moon-animator-mcp install-plugin`, restarts Studio, and allows the plugin's HTTP requests to 127.0.0.1. |
+| MoonBridge plugin connected | The server installs this Studio plugin itself when it starts. The user restarts Roblox Studio once and allows MoonBridge to make HTTP requests to 127.0.0.1. |
 | Moon Animator 2 loaded and its window open | Moon Animator 2 is a separate plugin that the user installs from the Roblox Creator Store. It is not bundled and you cannot install it for them. Ask them to install it and open it from the Plugins tab. |
 | A file open | `moon_open_file` with `create: true`. |
 
@@ -54,6 +54,12 @@ Batch keyframes: one `moon_set_keyframes` call with a whole phrase of motion is
 faster and undoes cleanly. Preview before committing whenever you are unsure
 which way an angle goes; a preview costs one call, a wrong batch costs three.
 
+Ask for only what you will read. `moon_sample` and `moon_preview_pose` report
+positions for the `parts` you name, `moon_scene` leaves keyframe values out
+unless `values` is set, and `moon_camera_path` and `moon_motion_trail` keep
+their long per-frame lists behind `samples` and `detail`. Small images
+(`cell_width`, `max_width`) are enough to judge a pose.
+
 ## Setting up a scene
 
 - `moon_insert_rig` places a built-in rig (R15, R6, ...). `position` is where
@@ -67,8 +73,21 @@ which way an angle goes; a preview costs one call, a wrong batch costs three.
   primitives. Attach props before the rig has many keyframes when you can: if
   the rig is already in the open file, the file must be saved first and is
   reloaded, which clears Moon Animator's undo history.
-- `moon_settings` sets the timeline length. Frames are the unit everywhere;
-  read `fps` from `moon_status` to convert to seconds.
+- `moon_settings` sets the timeline length and fps. Frames are the unit
+  everywhere; read `fps` from `moon_status` to convert to seconds. Set fps
+  before animating: changing it later either changes the speed of everything
+  or, with `keep_timing`, renumbers every keyframe.
+- `moon_remove_items` takes an item and its keyframes out of the file (the
+  instance stays in the place).
+- Any rig Moon Animator accepts works: Motor6D rigs, rigs jointed with
+  AnimationConstraints (newer Roblox characters), and skinned meshes with
+  bones. On a bone rig, name bones where the tools ask for parts.
+
+If the user deletes a rig and inserts another with the same name while the file
+is open, the file's tracks still drive the old one. `moon_status` and
+`moon_scene` mark such an item `stale`, and editing tools refuse it. Call
+`moon_save`, then `moon_open_file` with the same file name: reopening links
+every item to the instances now in the place.
 
 ## Joint rotations
 
@@ -125,6 +144,37 @@ Part names for `end_part` and `parts` come from the measurements the tools
 return (`moon_preview_pose` and `moon_sample` list them). A prop's part can be
 named differently from its joint.
 
+## Contact between two characters
+
+A punch, a grab or a handshake has to land on another rig, and that rig moves.
+
+1. **Aim at the other rig directly.** `moon_solve_reach` takes
+   `relative_to_item` next to `relative_to`, so the target can be a point in
+   the opponent's own part space: `"relative_to": "Head", "relative_to_item":
+   "Enemy", "target": [0, 0, -0.75]` is just in front of the opponent's face
+   (a part's local -Z is its front). Solve at the frame of contact, after the
+   opponent's motion is keyed, because the target follows the opponent.
+2. **Let the body help.** Add `UpperTorso` with limits to the joints so the
+   solver can twist and lean; an arm alone reaches about two studs.
+3. **Read the gap.** When the result says `reached: false`, `distanceToTarget`
+   is how much closer the attacker has to stand. Move the root joint by about
+   that much on that frame and solve again.
+4. **Check the whole exchange** with `moon_measure` from the fist to the target
+   part across the frames around contact. `distance` is between the two
+   points; `gap` is from the fist's centre to the surface of the target part's
+   box, negative while inside it. A good hit has a small positive gap (about
+   half a hand) on the contact frame and no `inside` frames on the way in or
+   out. If the fist passes through on the way, add a key between.
+5. **Look** with `focus: {"item": "Hero", "with": ["Enemy"], "view": "right"}`
+   so both characters are in frame.
+
+`moon_measure` also answers spacing questions: use `LowerTorso` to
+`LowerTorso` for how far apart two characters stand (`HumanoidRootPart` does
+not move with the animation). The gap uses the part's bounding box, which is
+larger than the visible shape for heads and other rounded meshes; trust
+`fromInToSpace` (the fist in the target part's local space) for exactly where
+on the part the fist is.
+
 ## Flips, spins and jumps
 
 `moon_spin` keys a rotation of any size on one joint with keys at most 90
@@ -151,9 +201,9 @@ The camera is an item like any other. Key its `CFrame` with
 - **A move** is two keys with easing on the first (`Sine` `InOut` reads as a
   dolly; `Linear` reads as mechanical).
 - **Tracking**: key the camera's `LookAtPart` property with an instance path
-  (for example `"Workspace.Idol.UpperTorso"`) and `null` to release. End
-  tracking one frame before the cut that follows; ending it on the cut frame
-  leaves one stale frame.
+  (for example `"Workspace.Idol.UpperTorso"`) and `null` to release. The track
+  is added the first time you key it. End tracking one frame before the cut
+  that follows; ending it on the cut frame leaves one stale frame.
 - **Subtitles**: key `Text` on the `subtitles` item; an empty string clears it.
 - **Letterbox**: key `BackgroundTransparency` 0 on the `letterbox` item to show
   the bars.
@@ -172,6 +222,7 @@ is the quickest way to confirm the camera does what you intended.
 | Is the timing snappy or floaty? Are the arcs clean? | `moon_motion_trail`: dots far apart are fast, bunched dots are slow or held |
 | Do the feet slide? | `moon_sample` reports slide distance per planted foot |
 | Is the hand really at the face? | `moon_sample` with `parts` and `relative_to` |
+| Does the fist reach the opponent, and when? | `moon_measure` between the two parts |
 
 Look at the images you request. A storyboard that shows a limb through the
 body, a prop floating off the hand, or a character facing away from the camera
@@ -179,6 +230,13 @@ is a defect to fix before reporting success, not a detail to mention.
 
 Notes in a tool result (for example that the viewport did not redraw in time)
 mean the image may be stale: capture again before trusting it.
+
+A `focus` view hides whatever stands between its camera and the item (a wall,
+a tree) for that image only, and names what it hid in the notes. The cutscene
+camera view hides nothing, so use it to judge what the audience will see.
+
+Easing shows up in `moon_scene` as a label such as `Back/Out(overshoot=2.5)`.
+An ease belongs to the keyframe it starts from.
 
 ## Saving and exporting
 
@@ -190,12 +248,27 @@ mean the image may be stale: capture again before trusting it.
   `<rig>.AnimSaves` and a camera folder under the Camera. Publishing the
   KeyframeSequence to Roblox is the user's step.
 - `moon_open_file` refuses to drop unsaved changes unless told to. Ask the user
-  before discarding their work.
+  before discarding their work. Opening the file that is already open reloads
+  it from its last save.
+
+## What these tools do not do
+
+Playing the animation at speed, copying and pasting keyframes, Moon Animator's
+Mirror, Stretch and Repeat commands, and importing an existing animation are
+not available as tools. Say so and let the user do them in the Moon Animator
+window; `moon_scene` then shows you the result. To repeat or shift a phrase
+yourself, read it with `moon_scene` (`values: true`) and write it again at the
+new frames with `moon_set_keyframes`.
+
+Nobody has watched the motion play until the user presses Play. Storyboards
+and motion trails show poses and spacing, not rhythm, so ask the user to play
+the result before calling an animation finished.
 
 ## When something goes wrong
 
-- **"not connected"**: Studio is closed, the MoonBridge plugin is not
-  installed, or its HTTP permission was declined. `moon_status` says which.
+- **"not connected"**: Studio is closed, Studio has not been restarted since
+  the MoonBridge plugin was installed, or its HTTP permission was declined.
+  `moon_status` says which.
 - **A tool reports Moon Animator is not loaded**: the user has to install or
   open Moon Animator 2. Stop and tell them; nothing else will work.
 - **A capture fails because the window is minimized or changed size**: the tool

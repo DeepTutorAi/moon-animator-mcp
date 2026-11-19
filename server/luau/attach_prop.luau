@@ -206,7 +206,7 @@ ChangeHistory:SetWaypoint("MoonBridge: attach prop")
 local reloaded = false
 if rigIsItem then
 	local file = LS.CurrentFile
-	Win.CloseFile()
+	closeFile()
 	if not Win.OpenFile(file) then
 		fail("the prop was attached, but Moon Animator could not reopen '" .. file.Name .. "'; open it again from the Moon Animator window")
 	end

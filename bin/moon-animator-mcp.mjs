@@ -12,7 +12,8 @@ Unofficial MCP server for Moon Animator 2 (Roblox Studio).
 
 Usage:
   moon-animator-mcp                    Run the MCP server on stdio (started by your MCP client).
-  moon-animator-mcp install-plugin     Install the MoonBridge plugin into Roblox Studio.
+  moon-animator-mcp install-plugin     Install the MoonBridge plugin into Roblox Studio now
+                                       (the server also does this when it starts).
   moon-animator-mcp uninstall-plugin   Remove the MoonBridge plugin from Roblox Studio.
   moon-animator-mcp install-skill      Copy the optional agent skill to ~/.claude/skills
                                        (--project: ./.claude/skills, --dir <folder>: any skills folder).

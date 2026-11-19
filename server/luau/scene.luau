@@ -1,36 +1,89 @@
 --@prelude
+--@targets
 -- Structure of the open Moon Animator file: items, tracks, keyframes, markers.
+-- Kept compact: one entry per track with parallel lists, not one object per keyframe.
 requireFile()
 
--- Rig tracks store joint properties (e.g. Motor6D.C1); report them as the pose
--- relative to rest, which is what a Roblox Pose.CFrame holds.
-local function rigPose(track, value)
-	if Moon.objIsType(track, "BoneTrack") then
-		return value
-	end
-	return value:ToObjectSpace(track.defaultValue)
+local function triple(x, y, z)
+	return { round(x), round(y), round(z) }
 end
 
-local function keyframes(track, isRig)
-	local list = {}
-	for _, keyframe in ipairs(track.TrackItems.Objects) do
-		local entry = { f = keyframe.frm_pos, ease = easeLabel(keyframe.EaseMap[keyframe.width]) }
+-- Values in the shapes moon_set_keyframes accepts ("<nil>" stands for a
+-- cleared Instance value, which is keyed with null).
+local function compact(value)
+	local kind = typeof(value)
+	if value == Moon.NIL_VALUE then
+		return "<nil>"
+	elseif kind == "CFrame" then
+		local rx, ry, rz = value:ToEulerAnglesXYZ()
+		return { position = triple(value.X, value.Y, value.Z), rotation = triple(math.deg(rx), math.deg(ry), math.deg(rz)) }
+	elseif kind == "Vector3" then
+		return triple(value.X, value.Y, value.Z)
+	elseif kind == "Vector2" then
+		return { round(value.X), round(value.Y) }
+	elseif kind == "Color3" then
+		return { math.floor(value.R * 255 + 0.5), math.floor(value.G * 255 + 0.5), math.floor(value.B * 255 + 0.5) }
+	elseif kind == "Instance" then
+		return value:GetFullName()
+	elseif kind == "EnumItem" then
+		return value.Name
+	elseif kind == "number" then
+		return round(value)
+	elseif kind == "boolean" or kind == "string" then
+		return value
+	end
+	return H.ser(value)
+end
+
+-- A joint pose relative to rest: rotation, plus position when it is not zero.
+-- Rig tracks store joint properties (e.g. Motor6D.C1) with the pose folded in.
+local function pose(track, value)
+	local relative = if Moon.objIsType(track, "BoneTrack") then value else value:ToObjectSpace(track.defaultValue)
+	local rx, ry, rz = relative:ToEulerAnglesXYZ()
+	local entry = { rotation = triple(math.deg(rx), math.deg(ry), math.deg(rz)) }
+	if relative.Position.Magnitude > 0.0005 then
+		entry.position = triple(relative.X, relative.Y, relative.Z)
+	end
+	return entry
+end
+
+local function trackEntry(track, isRig)
+	local frames, eases, values, groups = {}, {}, {}, {}
+	local sameEase, grouped = true, false
+	for index, keyframe in ipairs(track.TrackItems.Objects) do
+		frames[index] = keyframe.frm_pos
+		eases[index] = easeLabel(keyframe.EaseMap[keyframe.width])
+		if eases[index] ~= eases[1] then
+			sameEase = false
+		end
 		if keyframe.width > 0 then
-			entry.width = keyframe.width
+			groups[tostring(keyframe.frm_pos)] = keyframe.width
+			grouped = true
 		end
 		if ARGS.values then
 			local value = keyframe.TargetValues[0]
-			if value == Moon.NIL_VALUE then
-				entry.value = "<nil>"
-			elseif isRig and typeof(value) == "CFrame" then
-				entry.pose = H.ser(rigPose(track, value))
-			else
-				entry.value = H.ser(value)
-			end
+			values[index] = if isRig and typeof(value) == "CFrame" then pose(track, value) else compact(value)
 		end
-		table.insert(list, entry)
 	end
-	return list
+
+	local entry = { frames = frames }
+	if #frames > 0 then
+		if sameEase then
+			entry.ease = eases[1]
+		else
+			entry.eases = eases
+		end
+	end
+	if grouped then
+		entry.groupWidths = groups
+	end
+	if ARGS.values then
+		entry.values = values
+	end
+	if not track.Enabled then
+		entry.disabled = true
+	end
+	return entry
 end
 
 local items = {}
@@ -38,39 +91,33 @@ for index, container in ipairs(LS.LayerHandler.LayerContainer.Objects) do
 	local itemObject = container.ItemObject
 	local entry = {
 		index = index,
-		itemType = itemObject.Path.ItemType,
-		path = table.concat(itemObject.Path.InstanceNames, "."),
-		exists = itemObject.Path:GetItem() ~= nil,
+		type = itemObject.Path.ItemType,
+		path = itemPath(itemObject),
+		stale = staleReason(itemObject),
 	}
 
 	local properties = {}
 	for name, track in pairs(itemObject.PropertyMap) do
-		table.insert(properties, {
-			name = name,
-			valueType = track.PropertyData[2],
-			enabled = track.Enabled,
-			keyframes = keyframes(track, false),
-		})
+		local property = trackEntry(track, false)
+		property.type = track.PropertyData[2]
+		properties[name] = property
 	end
-	table.sort(properties, function(a, b)
-		return a.name < b.name
-	end)
-	if #properties > 0 then
+	if next(properties) ~= nil then
 		entry.properties = properties
 	end
 
 	if itemObject.RigContainer then
-		local jointCount, keyed = 0, {}
+		local keyed, unkeyed = {}, {}
 		for joint, track in pairs(itemObject.RigMap) do
-			jointCount += 1
 			if track.TrackItems.size > 0 then
-				table.insert(keyed, { joint = joint, enabled = track.Enabled, keyframes = keyframes(track, true) })
+				keyed[joint] = trackEntry(track, true)
+			else
+				table.insert(unkeyed, joint)
 			end
 		end
-		table.sort(keyed, function(a, b)
-			return a.joint < b.joint
-		end)
-		entry.rig = { jointCount = jointCount, keyedJoints = keyed }
+		table.sort(unkeyed)
+		entry.joints = if next(keyed) ~= nil then keyed else nil
+		entry.unkeyedJoints = if #unkeyed > 0 then unkeyed else nil
 	end
 
 	if itemObject.MarkerTrack then
@@ -83,11 +130,11 @@ for index, container in ipairs(LS.LayerHandler.LayerContainer.Objects) do
 			local runsCode = (marker.codeBegin ~= nil and marker.codeBegin ~= "")
 				or (marker.codeEnd ~= nil and marker.codeEnd ~= "")
 			table.insert(markers, {
-				f = marker.frm_pos,
-				width = marker.width,
+				frame = marker.frm_pos,
+				width = if marker.width > 0 then marker.width else nil,
 				name = marker.name,
-				events = events,
-				runsCode = runsCode,
+				events = if #events > 0 then events else nil,
+				runsCode = if runsCode then true else nil,
 			})
 		end
 		entry.markers = markers

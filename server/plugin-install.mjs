@@ -2,25 +2,36 @@
 // machine's bridge port and token) and places it in Roblox Studio's local
 // plugins folder.
 
-import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { bridgePort, ensureToken } from './paths.mjs';
 
 const PLUGIN_FILE = 'MoonBridge.rbxmx';
+const TEMPLATE = new URL('../plugin/MoonBridge.luau', import.meta.url);
 
+// Studio loads local plugins from this folder. It only creates the folder the
+// first time the user opens it from the Plugins tab, so it is created here
+// when Roblox itself is installed. MOON_STUDIO_PLUGINS_DIR names another one.
 export function studioPluginsDir() {
+  if (process.env.MOON_STUDIO_PLUGINS_DIR) return process.env.MOON_STUDIO_PLUGINS_DIR;
   if (process.platform !== 'win32' || !process.env.LOCALAPPDATA) {
     throw new Error('the Studio plugin installer currently supports Windows only');
   }
   const dir = join(process.env.LOCALAPPDATA, 'Roblox', 'Plugins');
-  if (!existsSync(dir)) {
-    throw new Error(`Roblox Studio plugins folder not found: ${dir} (open Roblox Studio once, then try again)`);
+  if (!existsSync(dirname(dir))) {
+    throw new Error(`Roblox is not installed for this user (${dirname(dir)} not found)`);
   }
+  mkdirSync(dir, { recursive: true });
   return dir;
 }
 
+// Version the plugin source in this package reports to the bridge.
+export function bundledPluginVersion() {
+  return /BRIDGE_VERSION = "([^"]+)"/.exec(readFileSync(TEMPLATE, 'utf8'))?.[1];
+}
+
 export function buildPlugin({ port, token }) {
-  const template = readFileSync(new URL('../plugin/MoonBridge.luau', import.meta.url), 'utf8');
+  const template = readFileSync(TEMPLATE, 'utf8');
   for (const placeholder of ['@@PORT@@', '@@TOKEN@@']) {
     if (!template.includes(placeholder)) throw new Error(`plugin source is missing the ${placeholder} placeholder`);
   }
@@ -42,6 +53,29 @@ export function installPlugin() {
   const target = join(studioPluginsDir(), PLUGIN_FILE);
   writeFileSync(target, buildPlugin({ port: bridgePort(), token: ensureToken() }));
   return target;
+}
+
+// Installs the plugin when it is missing or differs from this package's build
+// of it. Never throws: the server must still start, and say what is wrong, on
+// a machine where this cannot work. Returns { state, target } or { state, reason }
+// where state is current, installed, updated, skipped or unavailable.
+export function ensurePlugin() {
+  if (process.env.MOON_MCP_NO_PLUGIN_INSTALL === '1') {
+    return { state: 'skipped', reason: 'MOON_MCP_NO_PLUGIN_INSTALL is set' };
+  }
+  try {
+    const target = join(studioPluginsDir(), PLUGIN_FILE);
+    const built = buildPlugin({ port: bridgePort(), token: ensureToken() });
+    if (!existsSync(target)) {
+      writeFileSync(target, built);
+      return { state: 'installed', target };
+    }
+    if (readFileSync(target, 'utf8') === built) return { state: 'current', target };
+    writeFileSync(target, built);
+    return { state: 'updated', target };
+  } catch (error) {
+    return { state: 'unavailable', reason: error.message };
+  }
 }
 
 export function uninstallPlugin() {

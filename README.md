@@ -41,31 +41,12 @@ writes keyframes with undo, and exports with Moon Animator's own exporter.
 
 ## Install
 
-There are two halves, and both are needed in every setup:
+One command, then one restart of Studio.
 
-1. **The Studio side**: a small Studio plugin named MoonBridge, which connects
-   Studio to the server on your machine.
-2. **The agent side**: the MCP server, in one of three forms.
-
-### Step 1: install the MoonBridge Studio plugin
+### 1. Add the server to your MCP client
 
 ```powershell
-npx -y github:DeepTutorAi/moon-animator-mcp install-plugin
-```
-
-Then restart Roblox Studio and open a place. The first time, Studio asks
-whether MoonBridge may make HTTP requests to `127.0.0.1`: allow it. Open Moon
-Animator 2 from the Plugins tab as usual.
-
-The installer writes `MoonBridge.rbxmx` into `%LOCALAPPDATA%\Roblox\Plugins`
-with a secret token generated on your machine (see [Security](#security)).
-
-### Step 2: choose how the agent gets the tools
-
-#### Option A: MCP server only
-
-```powershell
-claude mcp add --scope user moon-animator -- npx -y github:DeepTutorAi/moon-animator-mcp
+claude mcp add --scope user moon-animator -- npx -y github:DeepTutorAi/moon-animator-mcp#v0.1.3
 ```
 
 For other clients, the equivalent configuration is:
@@ -75,29 +56,47 @@ For other clients, the equivalent configuration is:
   "mcpServers": {
     "moon-animator": {
       "command": "npx",
-      "args": ["-y", "github:DeepTutorAi/moon-animator-mcp"]
+      "args": ["-y", "github:DeepTutorAi/moon-animator-mcp#v0.1.3"]
     }
   }
 }
 ```
 
-#### Option B: MCP server plus the agent skill
+The first time the server starts it installs its Studio plugin, MoonBridge,
+into `%LOCALAPPDATA%\Roblox\Plugins`, and keeps it up to date afterwards. Set
+`MOON_MCP_NO_PLUGIN_INSTALL=1` if you would rather run `install-plugin`
+yourself.
 
-The skill is an optional field guide for the agent: the order to work in, how
-joint angles behave, how to get a prop to the mouth, how to cut a camera, and
-tested recipes. It makes a noticeable difference to the first result.
+### 2. Restart Roblox Studio
 
-Do Option A, then:
+Open a place. Studio asks once whether MoonBridge may make HTTP requests to
+`127.0.0.1`: allow it. Open Moon Animator 2 from the Plugins tab as usual.
+
+### 3. Check
+
+Ask the agent to call `moon_status`. It reports whether Studio is connected,
+whether Moon Animator 2 is loaded and which file is open, and says what to do
+about anything missing. Outside an agent session, this shows the same setup:
 
 ```powershell
-npx -y github:DeepTutorAi/moon-animator-mcp install-skill
+npx -y github:DeepTutorAi/moon-animator-mcp#v0.1.3 doctor
+```
+
+### Optional: the agent skill
+
+The skill is a field guide for the agent: the order to work in, how joint
+angles behave, how to get a prop to the mouth, how to cut a camera, and tested
+recipes. It makes a noticeable difference to the first result.
+
+```powershell
+npx -y github:DeepTutorAi/moon-animator-mcp#v0.1.3 install-skill
 ```
 
 This copies the skill to `~/.claude/skills/moon-animator`. Use `--project` to
 install into the current project's `.claude/skills` instead, or
 `--dir <folder>` for another client's skills folder.
 
-#### Option C: Claude Code plugin (server and skill together)
+### Alternative: Claude Code plugin (server and skill together)
 
 ```powershell
 claude plugin marketplace add DeepTutorAi/moon-animator-mcp
@@ -113,20 +112,16 @@ On Claude Code 2.1.275 or later the same thing is one step inside a session:
 /plugin install moon-animator --marketplace DeepTutorAi/moon-animator-mcp
 ```
 
-The plugin starts the same server through npx and bundles the same skill. Do
-not combine it with Option A, or the tools will be listed twice.
+The plugin starts the same server through npx and bundles the same skill. Use
+it instead of step 1, not as well as it, or the tools will be listed twice.
 
-### Step 3: check
+### Why the version is pinned
 
-Ask the agent to call `moon_status`, or run:
-
-```powershell
-npx -y github:DeepTutorAi/moon-animator-mcp doctor
-```
-
-`moon_status` reports whether the Studio plugin is connected, whether Moon
-Animator 2 is loaded, and which file is open, and says what to do about
-anything missing.
+`#v0.1.3` makes npx run exactly that release. The server runs code inside your
+Studio session, so the version you run should be one you chose, not whatever
+was pushed last. To update, change the tag (see
+[Updating](#updating-and-uninstalling)). Leaving the tag off tracks the newest
+commit instead.
 
 ## Using it
 
@@ -136,6 +131,7 @@ With Studio open and Moon Animator showing, ask for what you want:
 - "Add an R15 rig named Dancer, give it a microphone in the right hand, and animate a two-second singing pose."
 - "The feet slide during the groove between frames 60 and 180. Measure it and fix it."
 - "Add a backflip at frame 218, then show me the motion trail of the head."
+- "Make the hero's right hook land on the enemy's jaw at frame 30, and check that the fist never passes through the head."
 - "Export the animation."
 
 Everything the agent does lands in your Moon Animator file, and each edit is
@@ -153,14 +149,16 @@ one step in Moon Animator's undo history.
 | `moon_preview_pose` | Images and measurements of a pose without creating keyframes. |
 | `moon_motion_trail` | Paths of parts over time with speed, peaks and holds. |
 | `moon_sample` | Part positions per frame and a foot-sliding report. |
-| `moon_solve_reach` | Joint rotations that bring a part to a target. |
-| `moon_open_file` | Open or create a Moon Animator file. |
+| `moon_measure` | Distance and surface gap between two points on any items over frames. |
+| `moon_solve_reach` | Joint rotations that bring a part to a target, including a point on another item. |
+| `moon_open_file` | Open, create or reload a Moon Animator file. |
 | `moon_save` | Save the open file. |
-| `moon_settings` | Timeline length, loop, export priority. |
+| `moon_settings` | Timeline length, fps, loop, export priority. |
 | `moon_undo` | Undo or redo Moon Animator actions. |
 | `moon_insert_rig` | Place a built-in character rig. |
 | `moon_attach_prop` | Weld a prop to a rig part as an animatable joint. |
-| `moon_add_items` | Add rigs, the camera, subtitles and effects to the file. |
+| `moon_add_items` | Add rigs, the camera, subtitles and effects to the file, or property tracks to an item. |
+| `moon_remove_items` | Remove items and their keyframes from the file. |
 | `moon_set_keyframes` | Add or update keyframes on joints and properties. |
 | `moon_spin` | Key a rotation of any size, with an optional jump arc. |
 | `moon_delete_keyframes` | Delete keyframes or clear a track. |
@@ -187,11 +185,13 @@ MCP client  ──stdio──  moon-animator-mcp  ──HTTP on 127.0.0.1── 
 
 - The bridge listens on `127.0.0.1` only and every request needs a secret
   token. The token is generated on first use and stored in
-  `~/.moon-animator-mcp/bridge-token`; the installer embeds the same value in
-  your copy of the Studio plugin.
+  `~/.moon-animator-mcp/bridge-token`; the same value is embedded in your copy
+  of the Studio plugin.
 - The Studio plugin executes Luau sent by the local server. Any program on your
   machine that can read the token file can therefore run code in your Studio
   session. Do not share the token or your installed `MoonBridge.rbxmx`.
+- The server writes one file outside its own data folder: `MoonBridge.rbxmx`
+  in Studio's plugins folder.
 - A tool that runs arbitrary Luau (`moon_exec_luau`) exists for development
   and is disabled unless `MOON_MCP_ALLOW_EXEC=1` is set.
 
@@ -202,6 +202,29 @@ MCP client  ──stdio──  moon-animator-mcp  ──HTTP on 127.0.0.1── 
 | `MOON_BRIDGE_PORT` | `47823` | Bridge port. Set it for both `install-plugin` and the server; reinstall the plugin after changing it. |
 | `MOON_MCP_HOME` | `~/.moon-animator-mcp` | Where the token is stored. |
 | `MOON_MCP_ALLOW_EXEC` | unset | `1` enables `moon_exec_luau`. |
+| `MOON_MCP_NO_PLUGIN_INSTALL` | unset | `1` stops the server from installing or updating the Studio plugin. |
+| `MOON_STUDIO_PLUGINS_DIR` | `%LOCALAPPDATA%\Roblox\Plugins` | Where the Studio plugin is installed. |
+
+## Token cost
+
+- The tool list is about 6,400 tokens (22 tools).
+- Results are compact JSON. Long lists are opt-in: `moon_scene` returns
+  keyframe values only with `values`, `moon_sample` and `moon_preview_pose`
+  return positions only for the `parts` you name, and `moon_camera_path` and
+  `moon_motion_trail` keep per-frame data behind `samples` and `detail`.
+- Images cost by size. A default storyboard is roughly 1,500 tokens; lower
+  `cell_width` or `max_width` when a rough look is enough.
+
+Measured on a 6-second cutscene with 319 keyframes:
+
+| Call | Tokens (about) |
+| --- | --- |
+| `moon_status` | 250 |
+| `moon_scene` | 1,800 |
+| `moon_scene` with `values` | 4,200 |
+| `moon_sample`, foot-sliding check over 120 frames | 280 |
+| `moon_camera_path` | 520 |
+| `moon_motion_trail` (text part) | 230 |
 
 ## Limitations
 
@@ -213,21 +236,33 @@ MCP client  ──stdio──  moon-animator-mcp  ──HTTP on 127.0.0.1── 
 - Studio must be in edit mode, with its window not minimized while images are
   captured (a minimized window is restored automatically).
 - One Studio instance at a time.
+- Not available as tools: playing the animation at speed, copy and paste of
+  keyframes, Moon Animator's Mirror, Stretch and Repeat commands, and importing
+  an existing animation. Do these in the Moon Animator window.
 - Publishing an exported KeyframeSequence to Roblox is left to you.
 
 ## Updating and uninstalling
 
-npx checks the repository each time the server starts and installs the newest
-commit when there is one, so the server updates itself. When the release notes
-say the Studio plugin changed, run `install-plugin` again and restart Studio.
+To update, replace the tag wherever the package name appears in your MCP
+client's configuration, for example with Claude Code:
 
-To stay on a fixed version instead, add a tag to the package name everywhere
-it appears, for example `github:DeepTutorAi/moon-animator-mcp#v0.1.0`.
+```powershell
+claude mcp remove moon-animator
+```
+
+```powershell
+claude mcp add --scope user moon-animator -- npx -y github:DeepTutorAi/moon-animator-mcp#<new tag>
+```
+
+The server refreshes the Studio plugin when a release changes it, and
+`moon_status` tells you when Studio has to be restarted to load it. With the
+Claude Code plugin, `claude plugin update moon-animator@moon-animator-mcp`
+moves to the newest release.
 
 To remove everything:
 
 ```powershell
-npx -y github:DeepTutorAi/moon-animator-mcp uninstall-plugin
+npx -y github:DeepTutorAi/moon-animator-mcp#v0.1.3 uninstall-plugin
 ```
 
 ```powershell
@@ -235,16 +270,17 @@ claude mcp remove moon-animator
 ```
 
 Then delete `~/.moon-animator-mcp` and, if installed, the
-`~/.claude/skills/moon-animator` folder. For Option C use
+`~/.claude/skills/moon-animator` folder. For the Claude Code plugin use
 `claude plugin uninstall moon-animator@moon-animator-mcp`.
 
 ## Troubleshooting
 
 | Symptom | Fix |
 | --- | --- |
-| `moon_status` says the plugin is not connected | Studio is closed, the plugin is not installed, or the HTTP prompt was declined. In Studio: Plugins tab → Manage Plugins → MoonBridge → allow HTTP requests to `127.0.0.1`. |
+| `moon_status` says Studio is not connected | Studio is closed, has not been restarted since the plugin was installed, or the HTTP prompt was declined. In Studio: Plugins tab → Manage Plugins → MoonBridge → allow HTTP requests to `127.0.0.1`. |
 | `moon_status` says Moon Animator 2 is not loaded | Install it from the Creator Store, then open it from the Plugins tab. |
-| The server does not start in your MCP client | Run `npx -y github:DeepTutorAi/moon-animator-mcp --version` in a terminal to see the error. Git and Node.js 20+ must be on `PATH`. |
+| The server does not start in your MCP client | Run `npx -y github:DeepTutorAi/moon-animator-mcp#v0.1.3 --version` in a terminal to see the error. Git and Node.js 20+ must be on `PATH`. |
+| An item is marked `stale` | Its rig was deleted or replaced while the file was open. Save, then ask the agent to reopen the file. |
 | Images are black or show the wrong area | Leave the Studio window open and unminimized; ask the agent to capture again with `recalibrate`. |
 
 ## Development
@@ -265,6 +301,8 @@ tool over real MCP stdio, which is handy for trying changes against Studio:
 ```powershell
 node tools/mcp-call.mjs moon_storyboard "{}" --save storyboard.jpg
 ```
+
+Changes per release are listed in [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 

@@ -26,8 +26,10 @@ for _, entry in ipairs(plan) do
 	entry.track:set_prop(entry.value)
 	table.insert(state.posed, entry.track)
 end
+local relativeTo, relativeOwner = relativePart(instance, ARGS.relativeTo, ARGS.relativeToItem)
+poseSettler(instance, relativeOwner)()
 
-local result = measure(instance, partFilter(instance, ARGS.parts), relativePart(instance, ARGS.relativeTo))
+local result = measure(instance, partFilter(instance, ARGS.parts), relativeTo)
 result.facing = facingOf(instance)
 result.frame = LS.SliderFrame
 local size = workspace.CurrentCamera.ViewportSize

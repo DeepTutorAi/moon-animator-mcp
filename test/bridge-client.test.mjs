@@ -70,7 +70,7 @@ test('MCP server answers initialize and tools/list over stdio', async () => {
   const home = mkdtempSync(join(tmpdir(), 'moon-mcp-test-'));
   const server = spawn(process.execPath, [fileURLToPath(new URL('../bin/moon-animator-mcp.mjs', import.meta.url))], {
     stdio: ['pipe', 'pipe', 'ignore'],
-    env: { ...process.env, MOON_BRIDGE_PORT: String(port), MOON_MCP_HOME: home, MOON_MCP_ALLOW_EXEC: '' },
+    env: { ...process.env, MOON_BRIDGE_PORT: String(port), MOON_MCP_HOME: home, MOON_STUDIO_PLUGINS_DIR: home, MOON_MCP_ALLOW_EXEC: '' },
   });
   const replies = createInterface({ input: server.stdout })[Symbol.asyncIterator]();
   const request = async (message) => {
@@ -83,11 +83,13 @@ test('MCP server answers initialize and tools/list over stdio', async () => {
     assert.equal(init.result.protocolVersion, '2025-03-26');
     assert.equal(init.result.serverInfo.name, 'moon-animator-mcp');
     assert.match(init.result.instructions, /Creator Store/);
-    assert.match(readFileSync(join(home, 'bridge-token'), 'utf8'), /^[0-9a-f]{48}$/);
+    const token = readFileSync(join(home, 'bridge-token'), 'utf8');
+    assert.match(token, /^[0-9a-f]{48}$/);
+    assert.ok(readFileSync(join(home, 'MoonBridge.rbxmx'), 'utf8').includes(token), 'starting the server installs the Studio plugin');
 
     const list = await request({ id: 2, method: 'tools/list' });
     const names = list.result.tools.map((tool) => tool.name);
-    for (const expected of ['moon_status', 'moon_storyboard', 'moon_set_keyframes', 'moon_undo']) {
+    for (const expected of ['moon_status', 'moon_storyboard', 'moon_set_keyframes', 'moon_remove_items', 'moon_undo']) {
       assert.ok(names.includes(expected), `missing tool ${expected}`);
     }
     assert.ok(!names.includes('moon_exec_luau'), 'exec must stay off by default');

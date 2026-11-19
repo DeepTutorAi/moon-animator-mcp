@@ -57,16 +57,25 @@ test('file tools map to the right operations and defaults', async () => {
   await tools.moon_undo.call({});
   await tools.moon_undo.call({ steps: 3, redo: true });
   await tools.moon_settings.call({ length: 420, loop: true });
+  await tools.moon_settings.call({ fps: 30, keep_timing: true });
   await tools.moon_open_file.call({ name: 'Dance', create: true });
   await tools.moon_insert_rig.call({ name: 'Idol' });
+  await tools.moon_remove_items.call({ items: ['Idol', 2] });
   assert.deepEqual(calls.map((call) => [call.name, call.args]), [
     ['file_ops', { op: 'save' }],
     ['file_ops', { op: 'undo', steps: 1 }],
     ['file_ops', { op: 'redo', steps: 3 }],
-    ['file_ops', { op: 'settings', length: 420, loop: true, priority: undefined }],
+    ['file_ops', { op: 'settings', length: 420, loop: true, priority: undefined, fps: undefined, keepTiming: false }],
+    ['file_ops', { op: 'settings', length: undefined, loop: undefined, priority: undefined, fps: 30, keepTiming: true }],
     ['open_file', { name: 'Dance', create: true, discardChanges: false }],
     ['insert_rig', { kind: 'R15', name: 'Idol', position: [0, 0, 0], facing: 0 }],
+    ['remove_items', { items: ['Idol', 2] }],
   ]);
+
+  assert.throws(() => tools.moon_settings.call({ fps: 0 }), /fps/);
+  assert.throws(() => tools.moon_settings.call({ keep_timing: true }), /only applies with fps/);
+  assert.throws(() => tools.moon_remove_items.call({ items: [] }), /items/);
+  assert.throws(() => tools.moon_remove_items.call({ items: [{}] }), /items\[0\]/);
 });
 
 test('spin validates its range and forwards the motion options', async () => {

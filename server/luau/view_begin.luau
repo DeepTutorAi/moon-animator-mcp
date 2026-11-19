@@ -10,6 +10,7 @@ local CoreGui = game:GetService("CoreGui")
 local effects = CoreGui:FindFirstChild("MoonAnimatorEffects")
 -- Moon Animator's move/rotate gizmos are adornments kept in this folder.
 local gizmos = CoreGui:FindFirstChild("KojoGizmos")
+local Selection = game:GetService("Selection")
 
 local stale = _G.MoonBridgeView
 if stale then
@@ -25,6 +26,8 @@ local state = {
 	hidEffects = false,
 	hidGizmos = false,
 	posed = {},
+	hidden = {}, -- parts made invisible to clear the view: { target, modifier }
+	selection = nil, -- Studio selection put aside so its outlines stay out of the image
 	deadline = os.clock() + 30,
 }
 
@@ -40,6 +43,14 @@ function state.restore(options)
 	end
 	if state.hidGizmos then
 		gizmos.Parent = CoreGui
+	end
+	for _, entry in ipairs(state.hidden) do
+		entry.target.LocalTransparencyModifier = entry.modifier
+	end
+	state.hidden = {}
+	if state.selection then
+		Selection:Set(state.selection)
+		state.selection = nil
 	end
 	-- Previewed joints: drop the track's cached value so its animated value is written again.
 	for _, track in ipairs(state.posed) do
@@ -69,6 +80,10 @@ end
 if ARGS.hideUi and gizmos then
 	gizmos.Parent = nil
 	state.hidGizmos = true
+end
+if ARGS.hideUi and #Selection:Get() > 0 then
+	state.selection = Selection:Get()
+	Selection:Set({})
 end
 if ARGS.hideEffects and effects and effects.Enabled then
 	effects.Enabled = false

@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { buildPlugin } from '../server/plugin-install.mjs';
+import { buildPlugin, bundledPluginVersion, ensurePlugin } from '../server/plugin-install.mjs';
 
 const BIN = fileURLToPath(new URL('../bin/moon-animator-mcp.mjs', import.meta.url));
 const PACKAGE = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
@@ -13,7 +13,7 @@ const PACKAGE = JSON.parse(readFileSync(new URL('../package.json', import.meta.u
 async function withHome(run) {
   const home = mkdtempSync(join(tmpdir(), 'moon-mcp-test-'));
   try {
-    return await run(home, { ...process.env, MOON_MCP_HOME: home });
+    return await run(home, { ...process.env, MOON_MCP_HOME: home, MOON_STUDIO_PLUGINS_DIR: home });
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
@@ -92,6 +92,40 @@ test('plugin manifest, marketplace entry and package agree on names and version'
 
   assert.equal(manifest.version, PACKAGE.version);
   assert.deepEqual(marketplace.plugins.map((plugin) => [plugin.name, plugin.source]), [[manifest.name, './plugins/moon-animator']]);
-  assert.deepEqual(servers['moon-animator'].args, ['-y', 'github:DeepTutorAi/moon-animator-mcp']);
+  // The release is pinned everywhere a user copies the package name from.
+  const pinned = `github:DeepTutorAi/moon-animator-mcp#v${PACKAGE.version}`;
+  assert.deepEqual(servers['moon-animator'].args, ['-y', pinned]);
+  for (const path of ['README.md', 'plugins/moon-animator/README.md']) {
+    const text = readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
+    const specs = text.match(/github:DeepTutorAi\/moon-animator-mcp[^\s`"]*/g) ?? [];
+    assert.ok(specs.length > 0, `${path} names the package`);
+    for (const spec of specs) assert.ok(spec === pinned || spec.endsWith('#<new'), `${path} has an unpinned or outdated spec: ${spec}`);
+  }
   assert.ok(PACKAGE.repository.url.includes('DeepTutorAi/moon-animator-mcp'));
+});
+
+test('the Studio plugin is installed once, left alone when current, and rewritten when it differs', async () => {
+  await withHome((home) => {
+    const saved = { ...process.env };
+    Object.assign(process.env, { MOON_MCP_HOME: home, MOON_STUDIO_PLUGINS_DIR: home });
+    delete process.env.MOON_MCP_NO_PLUGIN_INSTALL;
+    try {
+      const first = ensurePlugin();
+      assert.equal(first.state, 'installed');
+      assert.equal(ensurePlugin().state, 'current');
+
+      writeFileSync(first.target, 'an older build');
+      assert.equal(ensurePlugin().state, 'updated');
+      assert.ok(readFileSync(first.target, 'utf8').includes(readFileSync(join(home, 'bridge-token'), 'utf8')));
+
+      process.env.MOON_MCP_NO_PLUGIN_INSTALL = '1';
+      assert.equal(ensurePlugin().state, 'skipped');
+    } finally {
+      for (const key of ['MOON_MCP_HOME', 'MOON_STUDIO_PLUGINS_DIR', 'MOON_MCP_NO_PLUGIN_INSTALL']) {
+        if (saved[key] === undefined) delete process.env[key];
+        else process.env[key] = saved[key];
+      }
+    }
+  });
+  assert.match(bundledPluginVersion(), /^\d+\.\d+\.\d+$/);
 });

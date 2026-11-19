@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { existsSync, writeFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { parseResult, withArgs } from '../server/luau.mjs';
-import { createTools } from '../server/tools.mjs';
+import { createTools, summarizeDistance } from '../server/tools.mjs';
 
 const VIEWPORT = { width: 1000, height: 500 };
 const FACING = { look: [0, 0, -1], right: [1, 0, 0] };
@@ -21,6 +21,7 @@ function createHarness({
   hasCamera = true,
   settled = true,
   studioStatus = { hasMoonGlobal: true, hasMainWindow: true, hasLayerSystem: true, moonVersion: 36000 },
+  blockers = [],
 } = {}) {
   const luauCalls = [];
   const captureCalls = [];
@@ -50,9 +51,25 @@ function createHarness({
         min: [-1, 0, -0.5],
         max: [1, 5, 0.5],
         // The left foot drifts 0.2 studs per sample; the right foot stays put.
-        parts: args.parts?.length === 0 ? {} : { LeftFoot: [frame * 0.04, 0.1, 0], RightFoot: [1, 0.1, 0], Head: [0, 4.5, 0] },
+        parts: args.parts?.length === 0 && !args.autoContacts ? {} : { LeftFoot: [frame * 0.04, 0.1, 0], RightFoot: [1, 0.1, 0], Head: [0, 4.5, 0] },
       }));
-      return { item: 'game.Workspace.Idol', fps: 10, lastKeyframe: 19, facing: FACING, viewport: VIEWPORT, frames };
+      return {
+        item: 'game.Workspace.Idol',
+        fps: 10,
+        lastKeyframe: 19,
+        facing: FACING,
+        viewport: VIEWPORT,
+        partNames: ['Head', 'LeftFoot', 'RightFoot'],
+        contactParts: args.contactParts ?? (args.autoContacts ? ['LeftFoot', 'RightFoot'] : []),
+        frames,
+      };
+    }
+    if (name === 'view_reveal') return { hidden: blockers, terrainInTheWay: false, settled: true };
+    if (name === 'distance') {
+      // A fist closing on a head 1.2 studs wide, passing through its front face on frame 20.
+      const fixed = (n) => Number(n.toFixed(3));
+      const samples = args.frames.map((frame) => [frame, fixed(2 - frame * 0.1), fixed(1.4 - frame * 0.1), 0, 0, fixed(frame * 0.1 - 2)]);
+      return { fps: 10, from: 'Workspace.Idol.RightHand', to: 'Workspace.Enemy.Head', toSize: [1.2, 1.2, 1.2], samples };
     }
     if (name === 'view_pose') {
       return { min: [-1, 0, -0.5], max: [1, 5, 0.5], facing: FACING, viewport: VIEWPORT, frame: currentFrame, parts: { Mic: [0, -0.2, -0.8] } };
@@ -240,7 +257,12 @@ test('camera path reports cuts, shots, and thinned samples that keep shot bounda
     [0, 9, ['static']],
     [10, 19, ['static']],
   ]);
-  const frames = parsed.samples.map((sample) => sample.frame);
+  assert.equal(parsed.samples, undefined, 'path samples are opt-in');
+
+  const [detailed] = await h.tools.call('moon_camera_path', { samples: true });
+  const withSamples = JSON.parse(detailed.text);
+  assert.equal(withSamples.sampleColumns[0], 'frame');
+  const frames = withSamples.samples.map((sample) => sample[0]);
   for (const boundary of [0, 9, 10, 19]) assert.ok(frames.includes(boundary));
 });
 
@@ -254,16 +276,57 @@ test('status reports a disconnected plugin without calling Studio', async () => 
   const h = createHarness();
   const tools = createTools({ ...h.deps, bridge: { status: async () => ({ pluginConnected: false }) } });
   const [content] = await tools.call('moon_status', {});
-  assert.equal(JSON.parse(content.text).bridge.pluginConnected, false);
+  const report = JSON.parse(content.text);
+  assert.equal(report.connected, false);
+  assert.match(report.hint, /not installed/);
   assert.equal(h.luauCalls.length, 0);
+
+  const hintFor = async (plugin) => {
+    const offline = createTools({ ...h.deps, plugin, bridge: { status: async () => ({ pluginConnected: false }) } });
+    return JSON.parse((await offline.call('moon_status', {}))[0].text).hint;
+  };
+  assert.match(await hintFor({ state: 'installed', target: 'X:/Plugins/MoonBridge.rbxmx' }), /installed just now.*Restart Roblox Studio/);
+  assert.match(await hintFor({ state: 'current' }), /not answering/);
 });
 
 test('status passes on a healthy session without notes', async () => {
   const h = createHarness();
   const [content] = await h.tools.call('moon_status', {});
   const report = JSON.parse(content.text);
-  assert.equal(report.studio.moonVersion, 36000);
+  assert.equal(report.connected, true);
+  assert.deepEqual(report.moonAnimator, { version: 36000, windowVisible: false });
   assert.equal(report.notes, undefined);
+  assert.ok(!content.text.includes('\n'), 'results are compact JSON');
+});
+
+test('status summarizes items, flags stale ones, and notices an outdated Studio plugin', async () => {
+  const studioStatus = {
+    hasMoonGlobal: true,
+    hasMainWindow: true,
+    hasLayerSystem: true,
+    moonVersion: 36000,
+    windowVisible: true,
+    hasDoCompositeAction: true,
+    camera: { cframe: { t: 'CFrame', p: [1, 2, 3], r: [0, 90, 0] }, fov: 70 },
+    file: { name: 'Cutscene1', fps: 60, length: 300, frame: 0 },
+    items: [
+      { index: 1, itemType: 'Camera', path: 'game.Workspace.CurrentCamera', hasMarkerTrack: false, properties: { CFrame: 8 } },
+      { index: 2, itemType: 'Rig', path: 'game.Workspace.Idol', hasMarkerTrack: false, properties: [], rig: { joints: 17, keyedJoints: 15 }, stale: 'replaced' },
+    ],
+  };
+  const h = createHarness({ studioStatus });
+  const tools = createTools({ ...h.deps, plugin: { version: '0.2.0', state: 'current' }, bridge: { status: async () => ({ pluginConnected: true, pluginVersion: '0.1.0' }) } });
+  const report = JSON.parse((await tools.call('moon_status', {}))[0].text);
+
+  assert.deepEqual(report.camera, { position: [1, 2, 3], rotation: [0, 90, 0], fov: 70 });
+  assert.deepEqual(report.items, [
+    { index: 1, type: 'Camera', path: 'game.Workspace.CurrentCamera', keyframes: { CFrame: 8 } },
+    { index: 2, type: 'Rig', path: 'game.Workspace.Idol', stale: 'replaced', rig: { joints: 17, keyedJoints: 15 } },
+  ]);
+  assert.equal(report.hasDoCompositeAction, undefined);
+  assert.equal(report.notes.length, 2);
+  assert.match(report.notes[0], /Stale items \(game\.Workspace\.Idol\).*moon_open_file/);
+  assert.match(report.notes[1], /running MoonBridge 0\.1\.0; version 0\.2\.0 is installed/);
 });
 
 test('status says when Moon Animator 2 is missing, not open, or an untested version', async () => {
@@ -332,6 +395,20 @@ test('focus frames the item, crops to it, and hides Moon Animator effects', asyn
   assert.deepEqual(shot.crop, { x: 10 + Math.round((1250 - 469) / 2), y: 20, width: 469, height: 625 });
   assert.equal(JSON.parse(details.text).frame, 10);
 
+  // The line of sight is cleared after the camera is placed and before the capture.
+  const order = names(h.luauCalls);
+  assert.ok(order.indexOf('view_reveal') > order.indexOf('view_step'));
+  assert.deepEqual(lastOf(h.luauCalls, 'view_reveal').args, { item: 'Idol', settleFrames: 3 });
+  assert.equal(JSON.parse(details.text).notes, undefined);
+
+  const blocked = createHarness({ blockers: ['Workspace.Wall', 'Workspace.Tree.Trunk'] });
+  const [, blockedDetails] = await blocked.tools.call('moon_screenshot', { focus: { item: 'Idol' } });
+  assert.match(JSON.parse(blockedDetails.text).notes[0], /Hidden for this image.*Workspace\.Wall, Workspace\.Tree\.Trunk/);
+
+  const plain = createHarness();
+  await plain.tools.call('moon_screenshot', { frame: 10 });
+  assert.ok(!names(plain.luauCalls).includes('view_reveal'), 'the cutscene camera view hides nothing');
+
   await assert.rejects(
     h.tools.call('moon_screenshot', { focus: { item: 'Idol' }, camera: { position: [0, 0, 0] } }),
     /either camera or focus/,
@@ -350,13 +427,13 @@ test('storyboard focus measures all frames once and keeps one camera', async () 
 test('pose preview poses inside a view session, shoots each view, and restores', async () => {
   const h = createHarness();
   const joints = [{ joint: 'RightUpperArm', rotation: [40, 60, 0] }];
-  const [image, details] = await h.tools.call('moon_preview_pose', { item: 'Idol', frame: 10, joints, relative_to: 'Head' });
+  const [image, details] = await h.tools.call('moon_preview_pose', { item: 'Idol', frame: 10, joints, parts: ['Mic'], relative_to: 'Head' });
   assert.equal(Buffer.from(image.data, 'base64').toString(), 'sheet-bytes');
 
   const order = names(h.luauCalls).filter((name) => name.startsWith('view_'));
-  assert.deepEqual(order, ['view_begin', 'view_step', 'view_pose', 'view_step', 'view_step', 'view_end']);
+  assert.deepEqual(order, ['view_begin', 'view_step', 'view_pose', 'view_step', 'view_reveal', 'view_step', 'view_reveal', 'view_end']);
   assert.deepEqual(h.luauCalls.find((call) => call.name === 'view_step').args, { frame: 10, settleFrames: 0 });
-  assert.deepEqual(lastOf(h.luauCalls, 'view_pose').args, { item: 'Idol', joints, parts: undefined, relativeTo: 'Head' });
+  assert.deepEqual(lastOf(h.luauCalls, 'view_pose').args, { item: 'Idol', joints, parts: ['Mic'], relativeTo: 'Head', relativeToItem: undefined });
   assert.deepEqual(h.luauCalls.at(-1), { name: 'view_end', args: { restoreCamera: true, restoreFrame: true } });
 
   const parsed = JSON.parse(details.text);
@@ -364,6 +441,10 @@ test('pose preview poses inside a view session, shoots each view, and restores',
   assert.deepEqual(parsed.positions, { Mic: [0, -0.2, -0.8] });
   assert.equal(parsed.positionsRelativeTo, 'Head');
   assert.deepEqual(h.sheetCalls[0].cells.map((cell) => cell.label), ['front', 'right']);
+
+  const [, bare] = await h.tools.call('moon_preview_pose', { item: 'Idol', joints });
+  assert.equal(JSON.parse(bare.text).positions, undefined, 'positions are reported only for requested parts');
+  assert.deepEqual(lastOf(h.luauCalls, 'view_pose').args.parts, []);
 
   await assert.rejects(h.tools.call('moon_preview_pose', { item: 'Idol', joints: [] }), /joints/);
   await assert.rejects(h.tools.call('moon_preview_pose', { item: 'Idol', joints, views: ['under'] }), /views/);
@@ -374,17 +455,30 @@ test('sample builds its frame list and reports foot sliding in world space only'
   const [content] = await h.tools.call('moon_sample', { item: 'Idol', from: 0, to: 19, step: 5, parts: ['LeftFoot'] });
   assert.deepEqual(lastOf(h.luauCalls, 'sample').args.frames, [0, 5, 10, 15, 19]);
 
+  assert.deepEqual(lastOf(h.luauCalls, 'sample').args.parts, ['LeftFoot']);
+  assert.equal(lastOf(h.luauCalls, 'sample').args.autoContacts, true);
+
   const parsed = JSON.parse(content.text);
-  assert.deepEqual(Object.keys(parsed.samples[0].parts), ['LeftFoot']);
+  assert.deepEqual(parsed.frames, [0, 5, 10, 15, 19]);
+  assert.deepEqual(Object.keys(parsed.positions), ['LeftFoot']);
+  assert.deepEqual(parsed.positions.LeftFoot[2], [0.4, 0.1, 0]);
   const left = parsed.contacts.find((entry) => entry.part === 'LeftFoot');
   const right = parsed.contacts.find((entry) => entry.part === 'RightFoot');
   assert.equal(left.slideStuds, 0.76);
   assert.equal(right.slideStuds, 0);
 
-  const [relative] = await h.tools.call('moon_sample', { item: 'Idol', frames: [3], relative_to: 'Head' });
-  assert.equal(JSON.parse(relative.text).contacts, undefined);
+  // Without `parts` there are no positions, only the names to ask for.
+  const [bare] = await h.tools.call('moon_sample', { item: 'Idol', frames: [3, 8] });
+  const summary = JSON.parse(bare.text);
+  assert.equal(summary.positions, undefined);
+  assert.deepEqual(summary.availableParts, ['Head', 'LeftFoot', 'RightFoot']);
+  assert.equal(summary.contacts.length, 2);
 
-  await assert.rejects(h.tools.call('moon_sample', { item: 'Idol', frames: [3], parts: ['Tail'] }), /unknown part/);
+  const [relative] = await h.tools.call('moon_sample', { item: 'Idol', frames: [3], parts: ['Head'], relative_to: 'Head' });
+  assert.equal(JSON.parse(relative.text).contacts, undefined);
+  assert.equal(lastOf(h.luauCalls, 'sample').args.autoContacts, false);
+
+  await assert.rejects(h.tools.call('moon_sample', { item: 'Idol', frames: [3], parts: Array(13).fill('Head') }), /at most 12/);
   await assert.rejects(h.tools.call('moon_sample', { item: 'Idol', from: 9, to: 2 }), /before from/);
 });
 
@@ -406,9 +500,14 @@ test('reach solver validates its arguments and forwards them', async () => {
     endPart: 'Mic_2',
     target: [0, -0.2, -0.8],
     relativeTo: 'Head',
+    relativeToItem: undefined,
     tolerance: undefined,
     joints: args.joints,
   });
+
+  // A target on another item, such as an opponent's head.
+  await h.tools.call('moon_solve_reach', { ...args, relative_to_item: 'Enemy' });
+  assert.equal(lastOf(h.luauCalls, 'solve_reach').args.relativeToItem, 'Enemy');
 
   for (const bad of [{ target: [0, 1] }, { joints: [] }, { joints: [{ joint: 'A', axes: 'xq' }] }, { end_part: '' }]) {
     await assert.rejects(h.tools.call('moon_solve_reach', { ...args, ...bad }));
@@ -429,6 +528,7 @@ test('motion trail samples the range, draws one trail per part, and reports spee
   assert.deepEqual(report.range, { from: 0, to: 10, step: 1, fps: 10 });
   const [head] = report.parts;
   assert.equal(head.part, 'Head');
+  assert.equal(head.speeds, undefined, 'per-interval speeds are opt-in');
   assert.equal(head.pathStuds, 5);
   assert.equal(head.peakSpeed, 10);
   assert.deepEqual(head.holds, [{ fromFrame: 5, toFrame: 10 }]);
@@ -448,8 +548,75 @@ test('motion trail defaults the range to the last keyframe and rejects bad range
   assert.equal(frames[0], 0);
   assert.equal(frames.at(-1), 19);
 
+  const [, detailed] = await h.tools.call('moon_motion_trail', { item: 1, from: 0, to: 4, step: 2, detail: true });
+  assert.equal(JSON.parse(detailed.text).parts[0].speeds.length, 2);
+
   await assert.rejects(h.tools.call('moon_motion_trail', { item: 1, from: 10, to: 10 }), /to must be after from/);
   await assert.rejects(h.tools.call('moon_motion_trail', { item: 1, from: 0, to: 1000, step: 1 }), /larger step/);
   await assert.rejects(h.tools.call('moon_motion_trail', { item: 1, parts: [] }), /1 to 6 part names/);
   await assert.rejects(h.tools.call('moon_motion_trail', {}), /item must be/);
+});
+
+test('measure samples a pair of points and reports the closest approach and time inside', async () => {
+  const h = createHarness();
+  const from = { item: 'Idol', part: 'RightHand' };
+  const to = { item: 'Enemy', part: 'Head', offset: [0, 0, -0.6] };
+  const [content] = await h.tools.call('moon_measure', { from, to, from_frame: 0, to_frame: 19, step: 5 });
+  assert.deepEqual(lastOf(h.luauCalls, 'distance').args, { from: { ...from, offset: undefined }, to, frames: [0, 5, 10, 15, 19] });
+
+  const report = JSON.parse(content.text);
+  assert.deepEqual(report.frames, [0, 5, 10, 15, 19]);
+  assert.deepEqual(report.distance, [2, 1.5, 1, 0.5, 0.1]);
+  assert.deepEqual(report.gap, [1.4, 0.9, 0.4, -0.1, -0.5]);
+  assert.deepEqual(report.closest, { frame: 19, distance: 0.1 });
+  assert.deepEqual(report.nearestSurface, { frame: 19, gap: -0.5 });
+  assert.deepEqual(report.inside, [{ fromFrame: 15, toFrame: 19 }]);
+  assert.deepEqual(report.fromInToSpace[0], [0, 0, -2]);
+
+  await assert.rejects(h.tools.call('moon_measure', { from, to: { item: 'Enemy' } }), /to\.part/);
+  await assert.rejects(h.tools.call('moon_measure', { from: { part: 'RightHand' }, to }), /from\.item/);
+  await assert.rejects(h.tools.call('moon_measure', { from, to, frames: [] }), /frames/);
+});
+
+test('distance summary handles bones, which have no surface, and separate visits inside', () => {
+  const bones = summarizeDistance({ fps: 60, from: 'a', to: 'b', samples: [[0, 3, false, 0, 0, 3], [1, 2, false, 0, 0, 2]] });
+  assert.equal(bones.gap, undefined);
+  assert.equal(bones.inside, undefined);
+  assert.deepEqual(bones.closest, { frame: 1, distance: 2 });
+
+  const twice = summarizeDistance({
+    fps: 60,
+    from: 'a',
+    to: 'b',
+    toSize: [1, 1, 1],
+    samples: [[0, 1, 0.5, 0, 0, 1], [1, 0.4, -0.1, 0, 0, 0.4], [2, 1, 0.5, 0, 0, 1], [3, 0.3, -0.2, 0, 0, 0.3], [4, 0.2, -0.3, 0, 0, 0.2]],
+  });
+  assert.deepEqual(twice.inside, [{ fromFrame: 1, toFrame: 1 }, { fromFrame: 3, toFrame: 4 }]);
+});
+
+test('views can keep other items in frame and positions can be read against another item', async () => {
+  const h = createHarness();
+  await h.tools.call('moon_screenshot', { frame: 10, focus: { item: 'Idol', with: ['Enemy'], view: 'right' } });
+  const sampled = h.luauCalls.filter((call) => call.name === 'sample').map((call) => call.args.item);
+  assert.deepEqual(sampled, ['Idol', 'Enemy']);
+  assert.equal(lastOf(h.luauCalls, 'view_reveal').args.item, 'Idol');
+  await assert.rejects(h.tools.call('moon_screenshot', { focus: { item: 'Idol', with: 'Enemy' } }), /focus\.with/);
+
+  const joints = [{ joint: 'RightUpperArm', rotation: [80, 0, 0] }];
+  const [, details] = await h.tools.call('moon_preview_pose', {
+    item: 'Idol',
+    joints,
+    parts: ['Mic'],
+    relative_to: 'Head',
+    relative_to_item: 'Enemy',
+    with: ['Enemy'],
+    views: ['right'],
+  });
+  assert.equal(lastOf(h.luauCalls, 'view_pose').args.relativeToItem, 'Enemy');
+  assert.deepEqual(lastOf(h.luauCalls, 'sample').args, { item: 'Enemy', parts: [] });
+  assert.equal(JSON.parse(details.text).positionsRelativeTo, 'Enemy.Head');
+
+  const [sample] = await h.tools.call('moon_sample', { item: 'Idol', frames: [3], parts: ['Head'], relative_to: 'Head', relative_to_item: 'Enemy' });
+  assert.equal(lastOf(h.luauCalls, 'sample').args.relativeToItem, 'Enemy');
+  assert.equal(JSON.parse(sample.text).positionsRelativeTo, 'Enemy.Head');
 });

@@ -17,10 +17,24 @@ local function round(n)
 	return math.floor(n * 1000 + 0.5) / 1000
 end
 
+-- "Back/Out(overshoot=2.5)": type, direction, and any extra parameters that were set.
 local function easeLabel(ease)
 	if not ease then
 		return "Linear"
 	end
-	local direction = ease.params and ease.params.Direction
-	return if direction then ease.ease_type .. "/" .. direction else ease.ease_type
+	local label = ease.ease_type
+	local params = ease.params
+	if not params then
+		return label
+	end
+	if params.Direction then
+		label ..= "/" .. params.Direction
+	end
+	local extras = {}
+	for _, name in ipairs({ "Overshoot", "Amplitude", "Period" }) do
+		if type(params[name]) == "number" then
+			table.insert(extras, string.lower(name) .. "=" .. tostring(round(params[name])))
+		end
+	end
+	return if #extras > 0 then label .. "(" .. table.concat(extras, ",") .. ")" else label
 end

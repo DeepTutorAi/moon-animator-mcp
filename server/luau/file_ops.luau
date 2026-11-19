@@ -40,8 +40,18 @@ elseif ARGS.op == "settings" then
 		end
 		change.Priority = ARGS.priority
 	end
+	if ARGS.fps ~= nil and ARGS.fps ~= LS.FPS then
+		change.FPS = ARGS.fps
+		-- Moon Animator's own option: move every keyframe so timing in seconds is kept.
+		change.StretchFPS = ARGS.keepTiming == true
+	end
 	if next(change) ~= nil then
+		local before = LS.KeyframeCount
 		Win.DoCompositeAction("EditAnimationSettings", change)
+		-- Moving keyframes to a lower fps merges those that land on the same frame.
+		if LS.KeyframeCount < before then
+			result.mergedKeyframes = before - LS.KeyframeCount
+		end
 	end
 elseif ARGS.op == "undo" or ARGS.op == "redo" then
 	-- Moon Animator keeps its undo and redo functions in the main window

@@ -13,7 +13,8 @@ local endPart = findPart(instance, ARGS.endPart)
 if not endPart then
 	fail(string.format("end_part '%s' is not a part of %s", tostring(ARGS.endPart), instance:GetFullName()))
 end
-local reference = relativePart(instance, ARGS.relativeTo)
+local reference, referenceOwner = relativePart(instance, ARGS.relativeTo, ARGS.relativeToItem)
+local settlePose = poseSettler(instance, referenceOwner)
 local goal = numbers(ARGS.target, 3, "target")
 local goalPoint = Vector3.new(goal[1], goal[2], goal[3])
 
@@ -22,6 +23,7 @@ if ARGS.frame ~= nil then
 	LS.PlaybackHandler:Stop()
 	LS:SetSliderFrame(ARGS.frame)
 end
+settlePose()
 
 -- Each solved joint starts from its animated pose on this frame.
 local joints = {}
@@ -55,9 +57,10 @@ local function apply(entry)
 	entry.track:set_prop(if entry.isBone then pose else entry.track.defaultValue * pose:Inverse())
 end
 
+-- Measures the rig as it stands; call settlePose first after changing a joint.
 local function distance()
-	local target = if reference then reference.CFrame:PointToWorldSpace(goalPoint) else goalPoint
-	return (endPart.Position - target).Magnitude
+	local target = if reference then worldCFrame(reference):PointToWorldSpace(goalPoint) else goalPoint
+	return (worldCFrame(endPart).Position - target).Magnitude
 end
 
 -- Distance to the target plus a small cost for leaving the starting pose, so
@@ -88,6 +91,7 @@ local ok, err = pcall(function()
 							if (low == nil or candidate >= low) and (high == nil or candidate <= high) then
 								entry.angles[axis] = candidate
 								apply(entry)
+								settlePose()
 								local value = cost()
 								if value < best - 1e-5 then
 									best = value
@@ -109,6 +113,9 @@ local ok, err = pcall(function()
 	end
 end)
 
+if ok then
+	settlePose()
+end
 local remaining = if ok then distance() else nil
 local solved = {}
 for _, entry in ipairs(joints) do
@@ -134,7 +141,7 @@ end
 return HttpService:JSONEncode({
 	frame = if ARGS.frame ~= nil then ARGS.frame else savedFrame,
 	endPart = ARGS.endPart,
-	relativeTo = ARGS.relativeTo or "world",
+	relativeTo = if reference then reference:GetFullName() else "world",
 	distanceToTarget = round(remaining),
 	reached = remaining <= (ARGS.tolerance or 0.05),
 	joints = solved,

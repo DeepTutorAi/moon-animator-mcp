@@ -20,9 +20,9 @@ if root then
 	end
 end
 
-if LS.CurrentFile and LS.CurrentFile == existing then
-	return HttpService:JSONEncode({ name = ARGS.name, created = false, alreadyOpen = true })
-end
+-- Opening the file that is already open reloads it from its saved state, which
+-- drops unsaved edits and links every item to the instances now in the place.
+local reloaded = LS.CurrentFile ~= nil and LS.CurrentFile == existing
 if not existing and not ARGS.create then
 	table.sort(available)
 	fail(string.format(
@@ -43,7 +43,7 @@ end
 
 -- Moon Animator only opens a file from its closed state, which also clears its undo history.
 if LS.CurrentFile then
-	Win.CloseFile()
+	closeFile()
 end
 
 local created = false
@@ -67,6 +67,7 @@ end
 return HttpService:JSONEncode({
 	name = LS.CurrentFile.Name,
 	created = created,
+	reloaded = if reloaded then true else nil,
 	fps = LS.FPS,
 	length = LS.length,
 	itemCount = LS.LayerHandler.LayerContainer.size,

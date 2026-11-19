@@ -218,7 +218,8 @@ prop("camera", "FieldOfView", 360, 42)
 
 prop("camera", "LookAtPart", 0, None)
 prop("camera", "LookAtPart", 181, "Workspace.Idol.UpperTorso")
-prop("camera", "LookAtPart", 269, None)
+# Released one frame before the cut at 269: on the cut frame it would leave one stale frame.
+prop("camera", "LookAtPart", 268, None)
 
 prop("Subtitles", "Text", 0, "")
 prop("Subtitles", "Text", 8, "Are you ready?")

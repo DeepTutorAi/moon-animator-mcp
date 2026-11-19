@@ -6,8 +6,26 @@
 requireFile()
 
 local instance = measurable(findItem(ARGS.item))
-local wanted = partFilter(instance, ARGS.parts)
-local relativeTo = relativePart(instance, ARGS.relativeTo)
+-- Positions are reported for the requested parts plus the ground-contact
+-- parts, which default to every part with "foot" in its name.
+local partNames, contactParts = {}, {}
+for _, part in ipairs(visibleParts(instance)) do
+	table.insert(partNames, part.Name)
+	if ARGS.autoContacts and string.find(string.lower(part.Name), "foot", 1, true) then
+		table.insert(contactParts, part.Name)
+	end
+end
+table.sort(partNames)
+for _, name in ipairs(ARGS.contactParts or {}) do
+	table.insert(contactParts, name)
+end
+local requested = table.clone(contactParts)
+for _, name in ipairs(ARGS.parts or {}) do
+	table.insert(requested, name)
+end
+local wanted = partFilter(instance, requested)
+local relativeTo, relativeOwner = relativePart(instance, ARGS.relativeTo, ARGS.relativeToItem)
+local settlePose = poseSettler(instance, relativeOwner)
 
 local camera = workspace.CurrentCamera
 local frames = {}
@@ -18,6 +36,7 @@ if ARGS.frames then
 	local ok, err = pcall(function()
 		for index, frame in ipairs(ARGS.frames) do
 			LS:SetSliderFrame(frame)
+			settlePose()
 			local entry = measure(instance, wanted, relativeTo)
 			entry.frame = LS.SliderFrame
 			table.insert(frames, entry)
@@ -47,5 +66,7 @@ return HttpService:JSONEncode({
 	lastKeyframe = LS.LayerHandler:GetLastKeyframePosition(),
 	facing = facingOf(instance),
 	viewport = { width = size.X, height = size.Y },
+	partNames = partNames,
+	contactParts = contactParts,
 	frames = frames,
 })
